@@ -1,0 +1,41 @@
+{
+  "note": "Canonical cases for the security headers a package takes from the platform config (firewall.md, 'Security headers'). Every client runs these so all of them add the same headers: sdk/platform-node (test/headers.test.js), sdk/platform-php (test/HeadersTest.php, and the WordPress plugin's copy of Core.php through PluginSyncTest), sdk/platform-python (tests/test_headers.py), sdk/platform-go (review_test.go), sdk/platform-java (SharedCasesTest.java), sdk/platform-dotnet (SharedCasesTests.cs) and sdk/platform-ruby (test/headers_test.rb). Only the nine headers the dashboard can produce (expresscollect/Analytics/platform.js, headersOf) are ever added, in any case: anything else from the config is dropped, so whoever got into our servers still couldn't make a customer's app grant another site its users' data (Access-Control-Allow-*), send every page elsewhere (Refresh, Location), log everyone out (Clear-Site-Data) or change what a response is. The value is visible ASCII, spaces and tabs, at most 4,000 characters. `repeat`, where given, is how many times the value is repeated. `ok` says whether the pair is added.",
+  "cases": [
+    { "name": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains", "ok": true },
+    { "name": "X-Content-Type-Options", "value": "nosniff", "ok": true },
+    { "name": "X-Frame-Options", "value": "SAMEORIGIN", "ok": true },
+    { "name": "Referrer-Policy", "value": "strict-origin-when-cross-origin", "ok": true },
+    { "name": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()", "ok": true },
+    { "name": "Cross-Origin-Opener-Policy", "value": "same-origin", "ok": true },
+    { "name": "Content-Security-Policy", "value": "default-src 'self'; report-uri https://t.example.com/events/csp/1; report-to csp", "ok": true },
+    { "name": "Content-Security-Policy-Report-Only", "value": "default-src 'self'", "ok": true },
+    { "name": "Reporting-Endpoints", "value": "csp=\"https://t.example.com/events/csp/1\"", "ok": true },
+    { "name": "content-security-policy", "value": "default-src 'self'", "ok": true },
+    { "name": "X-FRAME-OPTIONS", "value": "DENY", "ok": true },
+    { "name": "Referrer-Policy", "value": "no-referrer\tsame-origin", "ok": true },
+    { "name": "Referrer-Policy", "value": "", "ok": true },
+
+    { "name": "Access-Control-Allow-Origin", "value": "https://evil.example", "ok": false },
+    { "name": "Access-Control-Allow-Credentials", "value": "true", "ok": false },
+    { "name": "Refresh", "value": "0; url=https://evil.example/", "ok": false },
+    { "name": "Location", "value": "https://evil.example/", "ok": false },
+    { "name": "Clear-Site-Data", "value": "\"cookies\"", "ok": false },
+    { "name": "Link", "value": "<https://evil.example/x.css>; rel=stylesheet", "ok": false },
+    { "name": "Set-Cookie", "value": "session=x", "ok": false },
+    { "name": "Content-Type", "value": "text/plain", "ok": false },
+    { "name": "Content-Length", "value": "0", "ok": false },
+    { "name": "Transfer-Encoding", "value": "chunked", "ok": false },
+    { "name": "Content-Disposition", "value": "attachment", "ok": false },
+    { "name": "Cross-Origin-Resource-Policy", "value": "cross-origin", "ok": false },
+    { "name": "X-Frame-Options ", "value": "DENY", "ok": false },
+    { "name": "X-Frame-Options:", "value": "DENY", "ok": false },
+    { "name": "", "value": "DENY", "ok": false },
+
+    { "name": "X-Frame-Options", "value": "DENY\r\nSet-Cookie: a=b", "ok": false },
+    { "name": "X-Frame-Options", "value": "DENY\nRefresh: 0", "ok": false },
+    { "name": "Referrer-Policy", "value": "no-referrer\u0000", "ok": false },
+    { "name": "Referrer-Policy", "value": "café", "ok": false },
+    { "name": "Content-Security-Policy", "value": "a", "repeat": 4000, "ok": true },
+    { "name": "Content-Security-Policy", "value": "a", "repeat": 4001, "ok": false }
+  ]
+}

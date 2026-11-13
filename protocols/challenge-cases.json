@@ -1,0 +1,314 @@
+{
+  "note": "Shared cases for the browser check (sdk/protocols/firewall.md, 'Flood protection'). tokens: the pass each address gets from this secret at `now`. checks: whether a cookie value is a valid pass. decisions: whether a request gets the check page, with `challenge` as the rules answer would give it and the site's allow and goodbots lists empty. Every client's tests run these; regenerate with backend/scripts/challenge-cases.mjs, never by hand.",
+  "secret": "test-secret-0123456789abcdef",
+  "challenge": {
+    "skip": [
+      "/api/",
+      "/wp-json/",
+      "/.well-known/"
+    ],
+    "exempt": [
+      "66.249.64.0/27",
+      "2001:4860:4801:10::/64"
+    ]
+  },
+  "tokens": [
+    {
+      "ip": "203.0.113.7",
+      "who": "203.0.113.7",
+      "now": 1793750400,
+      "token": "20761.0ddc48fd8c38f7a225623a9a27f1d364"
+    },
+    {
+      "ip": "::ffff:203.0.113.7",
+      "who": "203.0.113.7",
+      "now": 1793750400,
+      "token": "20761.0ddc48fd8c38f7a225623a9a27f1d364"
+    },
+    {
+      "ip": "::ffff:cb00:7107",
+      "who": "203.0.113.7",
+      "now": 1793750400,
+      "token": "20761.0ddc48fd8c38f7a225623a9a27f1d364"
+    },
+    {
+      "ip": "2001:db8:0:1::42",
+      "who": "2001:0db8:0000:0001",
+      "now": 1793750400,
+      "token": "20761.40f432d0178a8d4a0a6977039fc1ba9b"
+    },
+    {
+      "ip": "2001:DB8:0:1:ffff::1",
+      "who": "2001:0db8:0000:0001",
+      "now": 1793750400,
+      "token": "20761.40f432d0178a8d4a0a6977039fc1ba9b"
+    },
+    {
+      "ip": "*",
+      "who": "*",
+      "now": 1793750400,
+      "token": "20761.41f343eed3c7494bababe53abee29292"
+    }
+  ],
+  "checks": [
+    {
+      "ip": "203.0.113.7",
+      "now": 1793750400,
+      "cookie": "20761.0ddc48fd8c38f7a225623a9a27f1d364",
+      "valid": true,
+      "why": "today"
+    },
+    {
+      "ip": "203.0.113.7",
+      "now": 1793836800,
+      "cookie": "20761.0ddc48fd8c38f7a225623a9a27f1d364",
+      "valid": true,
+      "why": "yesterday's still counts"
+    },
+    {
+      "ip": "203.0.113.7",
+      "now": 1793923200,
+      "cookie": "20761.0ddc48fd8c38f7a225623a9a27f1d364",
+      "valid": false,
+      "why": "two days old"
+    },
+    {
+      "ip": "203.0.113.8",
+      "now": 1793750400,
+      "cookie": "20761.0ddc48fd8c38f7a225623a9a27f1d364",
+      "valid": false,
+      "why": "another address"
+    },
+    {
+      "ip": "203.0.113.7",
+      "now": 1793664000,
+      "cookie": "20761.0ddc48fd8c38f7a225623a9a27f1d364",
+      "valid": false,
+      "why": "from the future"
+    },
+    {
+      "ip": "203.0.113.7",
+      "now": 1793750400,
+      "cookie": "20761.0DDC48FD8C38F7A225623A9A27F1D364",
+      "valid": false,
+      "why": "upper-case hex"
+    },
+    {
+      "ip": "203.0.113.7",
+      "now": 1793750400,
+      "cookie": "20761.0ddc48fd8c38f7a225623a9a27f1d36",
+      "valid": false,
+      "why": "truncated"
+    },
+    {
+      "ip": "203.0.113.7",
+      "now": 1793750400,
+      "cookie": "",
+      "valid": false,
+      "why": "empty"
+    },
+    {
+      "ip": "2001:db8:0:1::99",
+      "now": 1793750400,
+      "cookie": "20761.40f432d0178a8d4a0a6977039fc1ba9b",
+      "valid": true,
+      "why": "same IPv6 /64"
+    },
+    {
+      "ip": "2001:db8:0:2::42",
+      "now": 1793750400,
+      "cookie": "20761.40f432d0178a8d4a0a6977039fc1ba9b",
+      "valid": false,
+      "why": "another IPv6 /64"
+    },
+    {
+      "ip": "203.0.113.7",
+      "now": 1793750400,
+      "cookie": "20761.41f343eed3c7494bababe53abee29292",
+      "valid": false,
+      "why": "the nginx token (who = *) is not an address token"
+    }
+  ],
+  "decisions": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/pricing",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": true,
+      "why": "a browser's first page"
+    },
+    {
+      "request": {
+        "method": "HEAD",
+        "path": "/pricing",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": true,
+      "why": "HEAD is a page too"
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/pricing",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": false,
+      "why": "never a POST: webhooks, forms, payments"
+    },
+    {
+      "request": {
+        "method": "get",
+        "path": "/pricing",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": true,
+      "why": "method compared upper-case"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/pricing",
+        "accept": "*/*",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": false,
+      "why": "doesn't ask for a page: curl's default, fetch, feed readers"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/pricing",
+        "accept": "",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": false,
+      "why": "no Accept header"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/pricing",
+        "accept": "application/json",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": false,
+      "why": "an API call"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/pricing",
+        "accept": "TEXT/HTML",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": true,
+      "why": "Accept compared lower-case"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/orders",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": false,
+      "why": "a skip prefix"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/API/orders",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": false,
+      "why": "paths compared lower-case"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/apiary",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "198.51.100.9",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": true,
+      "why": "a prefix is a prefix of the path, with its slash"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/pricing",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "66.249.64.5",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": false,
+      "why": "in exempt (a search crawler)"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/pricing",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "2001:4860:4801:10::7",
+        "cookie": ""
+      },
+      "now": 1793750400,
+      "challenged": false,
+      "why": "in an exempt IPv6 range"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/pricing",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "198.51.100.9",
+        "cookie": "20761.1eaf5e409acf8f38a744e41da0c659ec"
+      },
+      "now": 1793750400,
+      "challenged": false,
+      "why": "already passed"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/pricing",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "ip": "198.51.100.9",
+        "cookie": "20761.753a41f7bb326ce3faba5785e1656f14"
+      },
+      "now": 1793750400,
+      "challenged": true,
+      "why": "a pass for another address"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "name": "analytics-report-packages",
+  "version": "0.1.2",
+  "description": "Reports your project's packages to your analytics dashboard once per build, so Security → Updates can tell you which have a newer release.",
+  "author": "steviec87",
+  "license": "MIT",
+  "keywords": [
+    "dependencies",
+    "outdated",
+    "lockfile",
+    "updates",
+    "security",
+    "analytics",
+    "ci"
+  ],
+  "bin": {
+    "report-packages": "bin/report-packages.js",
+    "analytics-report-packages": "bin/report-packages.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

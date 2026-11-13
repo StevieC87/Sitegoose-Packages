@@ -1,0 +1,771 @@
+{
+  "note": "Shared cases for taking values out of database queries (sdk/protocols/queries.md). Every server package's tests and the collector's run these: `expected` is what normalizing `statement` for database `db` must give, \"\" meaning the query is dropped. Lengths are counted in Unicode code points. Regenerate with expresscollect/scripts/query-cases.mjs, never by hand.",
+  "max_statement": 1000,
+  "cases": [
+    {
+      "statement": "SELECT * FROM users WHERE email = 'a@b.c' AND id IN (1, 2, 3)",
+      "db": "postgresql",
+      "expected": "SELECT * FROM users WHERE email = ? AND id IN (?)"
+    },
+    {
+      "statement": "select  *\n  from t2 where x=-5.5e3 and y = 0xFF -- trailing 'secret'\n and z = .5 and w = 1.",
+      "db": "postgresql",
+      "expected": "select * from t2 where x=-? and y = ? and z = ? and w = ?"
+    },
+    {
+      "statement": "SELECT $1, $2 FROM t WHERE a = $$it's$$ AND b = $tag$x$tag$ AND c IN ($1,$2,$3)",
+      "db": "postgresql",
+      "expected": "SELECT $1, $2 FROM t WHERE a = ? AND b = ? AND c IN (?)"
+    },
+    {
+      "statement": "SELECT E'a\\'b', N'x', name, e'z' FROM t WHERE label = 'B'",
+      "db": "postgresql",
+      "expected": "SELECT ?, ?, name, ? FROM t WHERE label = ?"
+    },
+    {
+      "statement": "SELECT \"email\" FROM \"t\" WHERE a = 'it''s' AND \"col\"\"x\" = 1",
+      "db": "postgresql",
+      "expected": "SELECT \"email\" FROM \"t\" WHERE a = ? AND \"col\"\"x\" = ?"
+    },
+    {
+      "statement": "SELECT x::numeric(10,2), arr[1] FROM t WHERE ts > now() - interval '5 min' # not a comment here",
+      "db": "postgresql",
+      "expected": "SELECT x::numeric(?), arr[?] FROM t WHERE ts > now() - interval ? # not a comment here"
+    },
+    {
+      "statement": "INSERT INTO t (a, b) VALUES (1, 'x'), (2, 'y'),(3,'z')",
+      "db": "mysql",
+      "expected": "INSERT INTO t (a, b) VALUES (?)"
+    },
+    {
+      "statement": "SELECT \"email\" FROM t WHERE a = \"bob@x.com\" # note 'x'\nAND b = 2",
+      "db": "mysql",
+      "expected": "SELECT ? FROM t WHERE a = ? AND b = ?"
+    },
+    {
+      "statement": "SELECT `col1`, `2023` FROM `t` WHERE c = 'x\\'y' AND d = \"q\\\"r\"",
+      "db": "mariadb",
+      "expected": "SELECT `col1`, `2023` FROM `t` WHERE c = ? AND d = ?"
+    },
+    {
+      "statement": "/* hint 123 */ SELECT col1 FROM t WHERE c = :name AND d = @p1 AND e = ? AND f = :1 LIMIT 10 OFFSET 20",
+      "db": "sqlite",
+      "expected": "SELECT col1 FROM t WHERE c = :name AND d = @p1 AND e = ? AND f = :1 LIMIT ? OFFSET ?"
+    },
+    {
+      "statement": "SELECT TOP 10 [2023 sales], name2 FROM dbo.t WHERE id = @id AND n = N'Zoë'",
+      "db": "mssql",
+      "expected": "SELECT TOP ? [? sales], name2 FROM dbo.t WHERE id = @id AND n = ?"
+    },
+    {
+      "statement": "SELECT café1, x FROM t WHERE y = 7",
+      "db": "oracle",
+      "expected": "SELECT café?, x FROM t WHERE y = ?"
+    },
+    {
+      "statement": "SELECT a FROM t\r\nWHERE\tb = 'unclosed",
+      "db": "postgresql",
+      "expected": "SELECT a FROM t WHERE b = ?"
+    },
+    {
+      "statement": "UPDATE t SET a = 'x' WHERE id = 5 /* never closed",
+      "db": "postgresql",
+      "expected": "UPDATE t SET a = ? WHERE id = ?"
+    },
+    {
+      "statement": "SELECT coalesce(a, 0), f(1, 'two', $3) FROM t WHERE b IN (?, ?) AND c IN (:a, :b)",
+      "db": "postgresql",
+      "expected": "SELECT coalesce(a, ?), f(?) FROM t WHERE b IN (?) AND c IN (?)"
+    },
+    {
+      "statement": "SELECT 1",
+      "db": "other",
+      "expected": "SELECT ?"
+    },
+    {
+      "statement": "SELECT 1",
+      "db": "unknown-db",
+      "expected": "SELECT ?"
+    },
+    {
+      "statement": "   \n  ",
+      "db": "postgresql",
+      "expected": ""
+    },
+    {
+      "statement": "-- only a comment",
+      "db": "postgresql",
+      "expected": ""
+    },
+    {
+      "statement": "(other)",
+      "db": "mysql",
+      "expected": "(other)"
+    },
+    {
+      "statement": "find users {\"email\":\"a@b.c\",\"age\":{\"$gt\":30},\"$or\":[{\"a\":1},{\"a\":2}]}",
+      "db": "mongodb",
+      "expected": "find users {\"email\":\"?\",\"age\":{\"$gt\":\"?\"},\"$or\":[{\"a\":\"?\"}]}"
+    },
+    {
+      "statement": "aggregate orders [{\"$match\":{\"status\":\"paid\",\"tags\":[\"a\",\"b\"]}},{\"$group\":{\"_id\":\"$user\",\"n\":{\"$sum\":1}}}]",
+      "db": "mongodb",
+      "expected": "aggregate orders [{\"$match\":{\"status\":\"?\",\"tags\":[\"?\"]}},{\"$group\":{\"_id\":\"?\",\"n\":{\"$sum\":\"?\"}}}]"
+    },
+    {
+      "statement": "find users {\"$or\":[{\"a\":1},{\"b\":2}],\"n\":null,\"ok\":true,\"x\":[]}",
+      "db": "mongodb",
+      "expected": "find users {\"$or\":[{\"a\":\"?\"},{\"b\":\"?\"}],\"n\":\"?\",\"ok\":\"?\",\"x\":[]}"
+    },
+    {
+      "statement": "find users {\"a\":{\"b\":{\"c\":{\"d\":{\"e\":{\"f\":{\"g\":1}}}}}}}",
+      "db": "mongodb",
+      "expected": "find users {\"a\":{\"b\":{\"c\":{\"d\":{\"e\":{\"f\":\"?\"}}}}}}"
+    },
+    {
+      "statement": "find users {\"name\":\"Zoë\"}",
+      "db": "mongodb",
+      "expected": "find users {\"name\":\"?\"}"
+    },
+    {
+      "statement": "insert users",
+      "db": "mongodb",
+      "expected": "insert users"
+    },
+    {
+      "statement": "find users not json at all",
+      "db": "mongodb",
+      "expected": "find users"
+    },
+    {
+      "statement": "delete",
+      "db": "mongodb",
+      "expected": "delete"
+    },
+    {
+      "statement": "aggregate [{\"$documents\":[{\"x\":\"John Smith\"}]}]",
+      "db": "mongodb",
+      "expected": "aggregate [{\"$documents\":[{\"x\":\"?\"}]}]"
+    },
+    {
+      "statement": "aggregate {\"x\":\"a b\"} trailing",
+      "db": "mongodb",
+      "expected": "aggregate"
+    },
+    {
+      "statement": "find \"bob@example.com\"",
+      "db": "mongodb",
+      "expected": "find \"?\""
+    },
+    {
+      "statement": "ALTER ROLE app PASSWORD 'C:\\' ; SELECT 'hunter2'",
+      "db": "postgresql",
+      "expected": "ALTER ROLE app PASSWORD ? ; SELECT ?"
+    },
+    {
+      "statement": "SELECT E'a\\'b', x FROM t WHERE y = 'C:\\'",
+      "db": "postgresql",
+      "expected": "SELECT ?, x FROM t WHERE y = ?"
+    },
+    {
+      "statement": "SELECT 'x\\'y', z",
+      "db": "mysql",
+      "expected": "SELECT ?, z"
+    },
+    {
+      "statement": "UPDATE t SET p = 'C:\\' WHERE note = 'hunter2'",
+      "db": "sqlite",
+      "expected": "UPDATE t SET p = ? WHERE note = ?"
+    },
+    {
+      "statement": "SELECT N'C:\\', [x\\] FROM t WHERE p = 'hunter2'",
+      "db": "mssql",
+      "expected": "SELECT ?, [x\\] FROM t WHERE p = ?"
+    },
+    {
+      "statement": "SELECT 'C:\\' FROM dual WHERE p = 'hunter2'",
+      "db": "oracle",
+      "expected": "SELECT ? FROM dual WHERE p = ?"
+    },
+    {
+      "statement": "SELECT 'C:\\' FROM t WHERE p = 'hunter2'",
+      "db": "other",
+      "expected": "(other)"
+    },
+    {
+      "statement": "SELECT 'it\\'s' FROM t WHERE p = 'hunter2'",
+      "db": "unknown-db",
+      "expected": "(other)"
+    },
+    {
+      "statement": "SELECT a FROM t WHERE p = 'x' AND q = 'C:\\dir\\'",
+      "db": "other",
+      "expected": "SELECT a FROM t WHERE p = ? AND q = ?"
+    },
+    {
+      "statement": "SELECT count() FROM events WHERE site_id = 'abc' AND ts > now() - INTERVAL 1 DAY AND x IN (1, 2) FORMAT JSON",
+      "db": "clickhouse",
+      "expected": "SELECT count() FROM events WHERE site_id = ? AND ts > now() - INTERVAL ? DAY AND x IN (?) FORMAT JSON"
+    },
+    {
+      "statement": "INSERT INTO events (a, b) VALUES ('x\\'y', 2)",
+      "db": "clickhouse",
+      "expected": "INSERT INTO events (a, b) VALUES (?)"
+    },
+    {
+      "statement": "SELECT 😀😀😀😀😀😀😀😀😀😀, col_0, col_1, col_2, col_3, col_4, col_5, col_6, col_7, col_8, col_9, col_10, col_11, col_12, col_13, col_14, col_15, col_16, col_17, col_18, col_19, col_20, col_21, col_22, col_23, col_24, col_25, col_26, col_27, col_28, col_29, col_30, col_31, col_32, col_33, col_34, col_35, col_36, col_37, col_38, col_39, col_40, col_41, col_42, col_43, col_44, col_45, col_46, col_47, col_48, col_49, col_50, col_51, col_52, col_53, col_54, col_55, col_56, col_57, col_58, col_59, col_60, col_61, col_62, col_63, col_64, col_65, col_66, col_67, col_68, col_69, col_70, col_71, col_72, col_73, col_74, col_75, col_76, col_77, col_78, col_79, col_80, col_81, col_82, col_83, col_84, col_85, col_86, col_87, col_88, col_89, col_90, col_91, col_92, col_93, col_94, col_95, col_96, col_97, col_98, col_99, col_100, col_101, col_102, col_103, col_104, col_105, col_106, col_107, col_108, col_109, col_110, col_111, col_112, col_113, col_114, col_115, col_116, col_117, col_118, col_119, col_120, col_121, col_122, col_123, col_124, col_125, col_126, col_127, col_128, col_129, col_130, col_131, col_132, col_133, col_134, col_135, col_136, col_137, col_138, col_139, col_140, col_141, col_142, col_143, col_144, col_145, col_146, col_147, col_148, col_149, col_150, col_151, col_152, col_153, col_154, col_155, col_156, col_157, col_158, col_159, col_160, col_161, col_162, col_163, col_164, col_165, col_166, col_167, col_168, col_169, col_170, col_171, col_172, col_173, col_174, col_175, col_176, col_177, col_178, col_179, col_180, col_181, col_182, col_183, col_184, col_185, col_186, col_187, col_188, col_189, col_190, col_191, col_192, col_193, col_194, col_195, col_196, col_197, col_198, col_199, col_200, col_201, col_202, col_203, col_204, col_205, col_206, col_207, col_208, col_209, col_210, col_211, col_212, col_213, col_214, col_215, col_216, col_217, col_218, col_219, col_220, col_221, col_222, col_223, col_224, col_225, col_226, col_227, col_228, col_229, col_230, col_231, col_232, col_233, col_234, col_235, col_236, col_237, col_238, col_239, col_240, col_241, col_242, col_243, col_244, col_245, col_246, col_247, col_248, col_249, col_250, col_251, col_252, col_253, col_254, col_255, col_256, col_257, col_258, col_259, col_260, col_261, col_262, col_263, col_264, col_265, col_266, col_267, col_268, col_269, col_270, col_271, col_272, col_273, col_274, col_275, col_276, col_277, col_278, col_279, col_280, col_281, col_282, col_283, col_284, col_285, col_286, col_287, col_288, col_289, col_290, col_291, col_292, col_293, col_294, col_295, col_296, col_297, col_298, col_299, col_300, col_301, col_302, col_303, col_304, col_305, col_306, col_307, col_308, col_309, col_310, col_311, col_312, col_313, col_314, col_315, col_316, col_317, col_318, col_319, col_320, col_321, col_322, col_323, col_324, col_325, col_326, col_327, col_328, col_329, col_330, col_331, col_332, col_333, col_334, col_335, col_336, col_337, col_338, col_339, col_340, col_341, col_342, col_343, col_344, col_345, col_346, col_347, col_348, col_349, col_350, col_351, col_352, col_353, col_354, col_355, col_356, col_357, col_358, col_359, col_360, col_361, col_362, col_363, col_364, col_365, col_366, col_367, col_368, col_369, col_370, col_371, col_372, col_373, col_374, col_375, col_376, col_377, col_378, col_379, col_380, col_381, col_382, col_383, col_384, col_385, col_386, col_387, col_388, col_389, col_390, col_391, col_392, col_393, col_394, col_395, col_396, col_397, col_398, col_399 FROM 😀t WHERE a = 'x'",
+      "db": "postgresql",
+      "expected": "SELECT 😀😀😀😀😀😀😀😀😀😀, col_0, col_1, col_2, col_3, col_4, col_5, col_6, col_7, col_8, col_9, col_10, col_11, col_12, col_13, col_14, col_15, col_16, col_17, col_18, col_19, col_20, col_21, col_22, col_23, col_24, col_25, col_26, col_27, col_28, col_29, col_30, col_31, col_32, col_33, col_34, col_35, col_36, col_37, col_38, col_39, col_40, col_41, col_42, col_43, col_44, col_45, col_46, col_47, col_48, col_49, col_50, col_51, col_52, col_53, col_54, col_55, col_56, col_57, col_58, col_59, col_60, col_61, col_62, col_63, col_64, col_65, col_66, col_67, col_68, col_69, col_70, col_71, col_72, col_73, col_74, col_75, col_76, col_77, col_78, col_79, col_80, col_81, col_82, col_83, col_84, col_85, col_86, col_87, col_88, col_89, col_90, col_91, col_92, col_93, col_94, col_95, col_96, col_97, col_98, col_99, col_100, col_101, col_102, col_103, col_104, col_105, col_106, col_107, col_108, col_109, col_110, col_111, col_112, col_113, col_114, col_115, col_116, col_117, col_118, col_119, col_120, co"
+    },
+    {
+      "statement": "GET user:?:cart",
+      "db": "redis",
+      "expected": "GET user:?:cart"
+    },
+    {
+      "statement": "get user:42:cart",
+      "db": "redis",
+      "expected": "GET user:?:cart"
+    },
+    {
+      "statement": "PIPELINE GET user:?",
+      "db": "redis",
+      "expected": "PIPELINE GET user:?"
+    },
+    {
+      "statement": "multi incr hits:?",
+      "db": "redis",
+      "expected": "MULTI INCR hits:?"
+    },
+    {
+      "statement": "CLIENT SETNAME",
+      "db": "redis",
+      "expected": "CLIENT SETNAME"
+    },
+    {
+      "statement": "OBJECT ENCODING k:?",
+      "db": "redis",
+      "expected": "OBJECT ENCODING k:?"
+    },
+    {
+      "statement": "SET k:? hunter2",
+      "db": "redis",
+      "expected": "(other)"
+    },
+    {
+      "statement": "GET bob@x.com",
+      "db": "redis",
+      "expected": "GET ?"
+    },
+    {
+      "statement": "BLPOP jobs",
+      "db": "redis",
+      "expected": "(other)"
+    },
+    {
+      "statement": "MULTI",
+      "db": "redis",
+      "expected": "MULTI"
+    },
+    {
+      "statement": "GET",
+      "db": "redis",
+      "expected": "GET"
+    },
+    {
+      "statement": "SET bob@x.com",
+      "db": "redis",
+      "expected": "SET ?"
+    },
+    {
+      "statement": "",
+      "db": "redis",
+      "expected": ""
+    }
+  ],
+  "redis_note": "redis_commands: a Redis command as the client sends it (`args`), and what a package must time it as (`expected`), null meaning it isn't timed (queries.md, \"Redis\"). Arguments that aren't strings stay as JSON gives them.",
+  "redis_commands": [
+    {
+      "args": [
+        "GET",
+        "user:42:cart"
+      ],
+      "expected": "GET user:?:cart"
+    },
+    {
+      "args": [
+        "get",
+        "user:42:cart"
+      ],
+      "expected": "GET user:?:cart"
+    },
+    {
+      "args": [
+        "SET",
+        "session:abc123",
+        "{\"user\":\"bob@x.com\"}",
+        "EX",
+        "3600"
+      ],
+      "expected": "SET session:?"
+    },
+    {
+      "args": [
+        "HSET",
+        "profile:bob@x.com",
+        "name",
+        "Bob"
+      ],
+      "expected": "HSET profile:?"
+    },
+    {
+      "args": [
+        "GET",
+        "cache:views:my-post-title"
+      ],
+      "expected": "GET cache:views:?"
+    },
+    {
+      "args": [
+        "GET",
+        "laravel_database_laravel_cache_:9f8e7d6c5b4a"
+      ],
+      "expected": "GET laravel_database_laravel_cache_:?"
+    },
+    {
+      "args": [
+        "GET",
+        "a::b:"
+      ],
+      "expected": "GET a::b:"
+    },
+    {
+      "args": [
+        "GET",
+        "Zoë:1"
+      ],
+      "expected": "GET ?:?"
+    },
+    {
+      "args": [
+        "GET",
+        "plain"
+      ],
+      "expected": "GET plain"
+    },
+    {
+      "args": [
+        "MGET",
+        "a:1",
+        "b:2",
+        "c:3"
+      ],
+      "expected": "MGET a:?"
+    },
+    {
+      "args": [
+        "DEL",
+        "lock:order:9",
+        "lock:order:10"
+      ],
+      "expected": "DEL lock:order:?"
+    },
+    {
+      "args": [
+        "KEYS",
+        "user:*"
+      ],
+      "expected": "KEYS user:?"
+    },
+    {
+      "args": [
+        "EXPIRE",
+        "s:1",
+        "60"
+      ],
+      "expected": "EXPIRE s:?"
+    },
+    {
+      "args": [
+        "EVAL",
+        "return redis.call('get', KEYS[1])",
+        "1",
+        "lock:order:9",
+        "hunter2"
+      ],
+      "expected": "EVAL lock:order:?"
+    },
+    {
+      "args": [
+        "EVALSHA",
+        "e0e1f9fabfc9d4800c877a703b823ac0578ff8db",
+        "0",
+        "hunter2"
+      ],
+      "expected": "EVALSHA"
+    },
+    {
+      "args": [
+        "FCALL",
+        "myfunc",
+        "2",
+        "k:1",
+        "k:2"
+      ],
+      "expected": "FCALL k:?"
+    },
+    {
+      "args": [
+        "ZUNION",
+        "2",
+        "z:a",
+        "z:b"
+      ],
+      "expected": "ZUNION z:a"
+    },
+    {
+      "args": [
+        "ZINTERCARD",
+        "0"
+      ],
+      "expected": "ZINTERCARD"
+    },
+    {
+      "args": [
+        "BITOP",
+        "AND",
+        "dest:1",
+        "src:2"
+      ],
+      "expected": "BITOP dest:?"
+    },
+    {
+      "args": [
+        "XADD",
+        "stream:events",
+        "*",
+        "email",
+        "bob@x.com"
+      ],
+      "expected": "XADD stream:events"
+    },
+    {
+      "args": [
+        "XREADGROUP",
+        "GROUP",
+        "g",
+        "c",
+        "COUNT",
+        "10",
+        "STREAMS",
+        "jobs:email",
+        ">"
+      ],
+      "expected": "XREADGROUP jobs:email"
+    },
+    {
+      "args": [
+        "XREADGROUP",
+        "GROUP",
+        "g",
+        "c",
+        "BLOCK",
+        "5000",
+        "STREAMS",
+        "jobs:email",
+        ">"
+      ],
+      "expected": null
+    },
+    {
+      "args": [
+        "XREAD",
+        "block",
+        "0",
+        "STREAMS",
+        "s",
+        "$"
+      ],
+      "expected": null
+    },
+    {
+      "args": [
+        "XINFO",
+        "STREAM",
+        "stream:events"
+      ],
+      "expected": "XINFO STREAM stream:events"
+    },
+    {
+      "args": [
+        "XGROUP",
+        "CREATE",
+        "stream:events",
+        "g",
+        "$"
+      ],
+      "expected": "XGROUP CREATE stream:events"
+    },
+    {
+      "args": [
+        "OBJECT",
+        "ENCODING",
+        "k:1"
+      ],
+      "expected": "OBJECT ENCODING k:?"
+    },
+    {
+      "args": [
+        "MEMORY",
+        "USAGE",
+        "k:1"
+      ],
+      "expected": "MEMORY USAGE k:?"
+    },
+    {
+      "args": [
+        "CLIENT",
+        "SETNAME",
+        "app-1"
+      ],
+      "expected": "CLIENT SETNAME"
+    },
+    {
+      "args": [
+        "CONFIG",
+        "SET",
+        "requirepass",
+        "hunter2"
+      ],
+      "expected": "CONFIG SET"
+    },
+    {
+      "args": [
+        "SCRIPT",
+        "LOAD",
+        "return 1"
+      ],
+      "expected": "SCRIPT LOAD"
+    },
+    {
+      "args": [
+        "BLPOP",
+        "queue:default",
+        "5"
+      ],
+      "expected": null
+    },
+    {
+      "args": [
+        "BRPOP",
+        "a",
+        "b",
+        "0"
+      ],
+      "expected": null
+    },
+    {
+      "args": [
+        "BZPOPMIN",
+        "z",
+        "1"
+      ],
+      "expected": null
+    },
+    {
+      "args": [
+        "SUBSCRIBE",
+        "news"
+      ],
+      "expected": null
+    },
+    {
+      "args": [
+        "WAIT",
+        "1",
+        "100"
+      ],
+      "expected": null
+    },
+    {
+      "args": [
+        "PUBLISH",
+        "chat:room:12",
+        "hello bob"
+      ],
+      "expected": "PUBLISH chat:room:?"
+    },
+    {
+      "args": [
+        "AUTH",
+        "default",
+        "hunter2"
+      ],
+      "expected": "AUTH"
+    },
+    {
+      "args": [
+        "HELLO",
+        "3",
+        "AUTH",
+        "default",
+        "hunter2"
+      ],
+      "expected": "HELLO"
+    },
+    {
+      "args": [
+        "ECHO",
+        "hunter2"
+      ],
+      "expected": "ECHO"
+    },
+    {
+      "args": [
+        "SELECT",
+        "3"
+      ],
+      "expected": "SELECT"
+    },
+    {
+      "args": [
+        "PING"
+      ],
+      "expected": "PING"
+    },
+    {
+      "args": [
+        "MULTI"
+      ],
+      "expected": "MULTI"
+    },
+    {
+      "args": [
+        "EXEC"
+      ],
+      "expected": "EXEC"
+    },
+    {
+      "args": [
+        "SCAN",
+        "0",
+        "MATCH",
+        "user:*"
+      ],
+      "expected": "SCAN"
+    },
+    {
+      "args": [
+        "JSON.GET",
+        "doc:1",
+        "$.name"
+      ],
+      "expected": "JSON.GET doc:?"
+    },
+    {
+      "args": [
+        "FT.SEARCH",
+        "idx:users",
+        "@email:bob"
+      ],
+      "expected": "FT.SEARCH idx:users"
+    },
+    {
+      "args": [
+        "GET"
+      ],
+      "expected": "GET"
+    },
+    {
+      "args": [
+        "GET",
+        42
+      ],
+      "expected": "GET ?"
+    },
+    {
+      "args": [
+        "GET",
+        ""
+      ],
+      "expected": "GET ?"
+    },
+    {
+      "args": [
+        "EVAL",
+        "return 1",
+        "1",
+        ""
+      ],
+      "expected": "EVAL ?"
+    },
+    {
+      "args": [
+        "OBJECT",
+        42,
+        "user"
+      ],
+      "expected": "OBJECT"
+    },
+    {
+      "args": [
+        "PIPELINE",
+        "x"
+      ],
+      "expected": "PIPELINE"
+    },
+    {
+      "args": [
+        "GET",
+        "PIPELINE"
+      ],
+      "expected": "GET PIPELINE"
+    },
+    {
+      "args": [
+        "XREAD",
+        "STREAMS",
+        "block",
+        "0"
+      ],
+      "expected": "XREAD block"
+    },
+    {
+      "args": [
+        "XREADGROUP",
+        "GROUP",
+        "g",
+        "block",
+        "STREAMS",
+        "jobs",
+        ">"
+      ],
+      "expected": "XREADGROUP jobs"
+    },
+    {
+      "args": [
+        "bad command",
+        "k"
+      ],
+      "expected": null
+    },
+    {
+      "args": [
+        "",
+        "k"
+      ],
+      "expected": null
+    },
+    {
+      "args": [],
+      "expected": null
+    },
+    {
+      "args": [
+        7,
+        "k"
+      ],
+      "expected": null
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "shop",
+  "dependencies": {
+    "local-lib": "file:../local-lib",
+    "next": "15.1.0",
+    "react": "^19.0.0",
+    "ui": "workspace:*"
+  },
+  "optionalDependencies": {
+    "@scope/opt": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "vitest": "^2"
+  }
+}

@@ -1,0 +1,173 @@
+{
+ "script": {
+  "value": "20761.0ddc48fd8c38f7a225623a9a27f1d364",
+  "script": "(function(){var n=\"__sg_pass\",v=\"20761.0ddc48fd8c38f7a225623a9a27f1d364\",m=document.getElementById(\"m\"),s=location.protocol===\"https:\";document.cookie=n+\"=\"+v+\"; Max-Age=86400; Path=/; SameSite=Lax\"+(s?\"; Secure\":\"\");if((\" \"+document.cookie+\";\").indexOf(\" \"+n+\"=\"+v+\";\")<0){m.textContent=\"Please allow cookies for this site, then reload the page.\";return;}var k=\"__sg_tries\",r=0,t;try{t=JSON.parse(sessionStorage.getItem(k)||\"[]\").filter(function(x){return Date.now()-x<60000;});r=t.length;if(r<3){t.push(Date.now());sessionStorage.setItem(k,JSON.stringify(t));}}catch(e){t=/(?:^|; )__sg_tries=([0-9]+)/.exec(document.cookie);r=t?+t[1]:0;if(r<3)document.cookie=k+\"=\"+(r+1)+\"; Max-Age=60; Path=/; SameSite=Lax\"+(s?\"; Secure\":\"\");}if(r>=3){m.textContent=\"This page couldn't be opened because your connection's address keeps changing. Please try again in a minute.\";return;}location.reload();})();"
+ },
+ "page_template": "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<meta name=\"robots\" content=\"noindex\"><title>Just a moment</title>\n<style nonce=\"{nonce}\">body{{font:16px/1.5 system-ui,sans-serif;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center;color:#222;background:#fafafa}}main{{max-width:28rem;padding:2rem;text-align:center}}</style>\n</head><body><main><p id=\"m\">Checking your browser before you continue&hellip;</p>\n<noscript><p>Please turn on JavaScript to continue to this site.</p></noscript></main>\n<script nonce=\"{nonce}\">{script}</script>\n</body></html>\n",
+ "buckets": [
+  {
+   "key": "new-checkout",
+   "user": "42",
+   "bucket": 32
+  },
+  {
+   "key": "a",
+   "user": "b",
+   "bucket": 44
+  },
+  {
+   "key": "flag",
+   "user": "user-ünï",
+   "bucket": 60
+  },
+  {
+   "key": "x",
+   "user": "",
+   "bucket": 67
+  }
+ ],
+ "proxy": [
+  {
+   "secret": "s3cret",
+   "prefix": "d17f9571",
+   "key": "e30f556c6d211a44134afbcf1bad8986"
+  },
+  {
+   "secret": "test-secret-0123456789abcdef",
+   "prefix": "32c63219",
+   "key": "c9cb405e8eb74260a3212287bcd30f10"
+  }
+ ],
+ "routes": [
+  {
+   "path": "/",
+   "route": "/"
+  },
+  {
+   "path": "/orders/123/items/9f8e7d6c5b4a39281706",
+   "route": "/orders/:id/items/:id"
+  },
+  {
+   "path": "/u/550e8400-e29b-41d4-a716-446655440000",
+   "route": "/u/:id"
+  },
+  {
+   "path": "/a/abcdef0123456789",
+   "route": "/a/:id"
+  },
+  {
+   "path": "/p/some-long-slug-with-digit-1-here",
+   "route": "/p/:id"
+  },
+  {
+   "path": "/x?y=1",
+   "route": "/x"
+  },
+  {
+   "path": "",
+   "route": "/"
+  },
+  {
+   "path": "orders",
+   "route": "/orders"
+  },
+  {
+   "path": "/a/12ab",
+   "route": "/a/12ab"
+  }
+ ],
+ "buckets_ms": [
+  {
+   "ms": 0,
+   "bucket": 0
+  },
+  {
+   "ms": 5,
+   "bucket": 0
+  },
+  {
+   "ms": 5.1,
+   "bucket": 1
+  },
+  {
+   "ms": 10,
+   "bucket": 1
+  },
+  {
+   "ms": 99,
+   "bucket": 4
+  },
+  {
+   "ms": 100,
+   "bucket": 4
+  },
+  {
+   "ms": 101,
+   "bucket": 5
+  },
+  {
+   "ms": 10000,
+   "bucket": 10
+  },
+  {
+   "ms": 10001,
+   "bucket": 11
+  }
+ ],
+ "crawlers": [
+  {
+   "ua": "Mozilla/5.0 (compatible; GPTBot/1.0)",
+   "bot": "GPTBot"
+  },
+  {
+   "ua": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ChatGPT-User/1.0)",
+   "bot": "ChatGPT-User"
+  },
+  {
+   "ua": "Googlebot/2.1",
+   "bot": "Googlebot"
+  },
+  {
+   "ua": "curl/8.0",
+   "bot": "Other bot"
+  },
+  {
+   "ua": "Mozilla/5.0 (Windows NT 10.0)",
+   "bot": ""
+  },
+  {
+   "ua": "Java/17.0.2",
+   "bot": "Other bot"
+  },
+  {
+   "ua": "YandexMobileBot",
+   "bot": "YandexBot"
+  },
+  {
+   "ua": "some crawler",
+   "bot": "Other bot"
+  },
+  {
+   "ua": "Pinterest/0.2",
+   "bot": "Pinterestbot"
+  },
+  {
+   "ua": "Pinterestbot/1.0",
+   "bot": "Pinterestbot"
+  },
+  {
+   "ua": "",
+   "bot": ""
+  },
+  {
+   "ua": "facebookexternalhit/1.1",
+   "bot": "facebookexternalhit"
+  },
+  {
+   "ua": "Screaming Frog SEO Spider",
+   "bot": "ScreamingFrog"
+  }
+ ],
+ "maintenance_page": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Back soon</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,sans-serif;background:#f8fafc;color:#0f172a}main{max-width:32rem;padding:2rem;text-align:center}h1{font-size:1.6rem;margin:0 0 .5rem}p{color:#475569;margin:0}@media(prefers-color-scheme:dark){body{background:#0f172a;color:#e2e8f0}p{color:#94a3b8}}</style></head><body><main><h1>Back soon</h1><p>We &lt;b&gt;are&lt;/b&gt; &amp; back</p></main></body></html>",
+ "maintenance_default": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Back soon</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,sans-serif;background:#f8fafc;color:#0f172a}main{max-width:32rem;padding:2rem;text-align:center}h1{font-size:1.6rem;margin:0 0 .5rem}p{color:#475569;margin:0}@media(prefers-color-scheme:dark){body{background:#0f172a;color:#e2e8f0}p{color:#94a3b8}}</style></head><body><main><h1>Back soon</h1><p>We&#x27;re doing some maintenance. Please check back in a few minutes.</p></main></body></html>"
+}

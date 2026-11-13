@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project.urls]
+Homepage = "https://sitegoose.com"
+Source = "https://github.com/StevieC87/Sitegoose-Packages/tree/main/platform-python"
+Issues = "https://github.com/StevieC87/Sitegoose-Packages/issues"
+Security = "https://sitegoose.com/security"
+
+[project]
+name = "analytics-platform"
+version = "0.3.8"
+description = "Firewall, error monitoring and server analytics for your Python server, run from your analytics dashboard."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "steviec87" }]
+keywords = [
+  "firewall",
+  "waf",
+  "rate-limit",
+  "error-monitoring",
+  "analytics",
+  "server-monitoring",
+  "django",
+  "flask",
+  "fastapi",
+  "celery",
+  "rq",
+  "dramatiq",
+  "wsgi",
+  "asgi",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.12",
+  "Framework :: Django",
+  "Framework :: Flask",
+  "Framework :: FastAPI",
+  "Topic :: Internet :: WWW/HTTP",
+  "Topic :: Internet :: Log Analysis",
+  "Topic :: Security",
+  "Topic :: System :: Monitoring",
+]
+dependencies = []
+
+[tool.setuptools]
+packages = ["analytics_platform"]

@@ -1,0 +1,37 @@
+# The analytics server agent (sdk/vps-agent). Rules stay in place when it
+# stops; `analytics-agent clear` removes them.
+[Unit]
+Description=Analytics firewall and file monitoring agent
+After=network-online.target nftables.service nginx.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/env python3 /usr/local/bin/analytics-agent run
+Restart=always
+RestartSec=30
+# nftables needs CAP_NET_ADMIN; nginx reloads need root's signal rights.
+NoNewPrivileges=yes
+# Read-only, not hidden: sites in /home (public_html) are watched for changes.
+ProtectHome=read-only
+PrivateTmp=yes
+# It runs as root because nftables and nginx reloads need it, so it gives up
+# everything root doesn't need here. Deliberately NOT set, because each one
+# breaks a backend: ProtectKernelModules (nftables loads nf_tables on first
+# use), ProtectSystem=full or strict (the nginx backend writes
+# /etc/nginx/analytics-firewall.conf), and a narrow CapabilityBoundingSet
+# (`nginx -t` opens the site's log files). AF_NETLINK is what nft talks over.
+ProtectSystem=true
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# The hourly file check stays out of the site's way.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target

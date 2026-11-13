@@ -1,0 +1,8 @@
+homepage: "https://sitegoose.com"
+documentation: "https://sitegoose.com"
+versions:
+  # Newest first. The gallery reads each version from the commit named here,
+  # so this is filled in after template.tpl is pushed: put the full SHA of the
+  # commit that holds this version of template.tpl, then commit metadata.yaml.
+  - sha: REPLACE_WITH_THE_COMMIT_SHA
+    changeNotes: First release.

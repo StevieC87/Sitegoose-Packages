@@ -1,0 +1,21 @@
+{
+  "note": "Canonical cases for the type a first-party proxy serves a collector answer with, from the site's own domain (<prefix>/api/…). Every client runs these: sdk/platform-node (test/proxyAnswer.test.js, which covers hono.js too), sdk/platform-php (test/ProxyAnswerTest.php; the WordPress plugin's Proxy.php is the same file), sdk/platform-python (tests/test_proxy_answer.py), sdk/platform-go (review_test.go), sdk/platform-java (SharedCasesTest.java), sdk/platform-dotnet (SharedCasesTests.cs) and sdk/platform-ruby (test/proxy_answer_test.rb). The type comes from the collector, so only JSON, plain text and WebP (site images, /collectanalytics/i/) keep theirs; anything else, or none, is served as `text/plain; charset=utf-8`, always with `X-Content-Type-Options: nosniff`. Otherwise a server that is no longer ours could answer with a page that runs as the customer's own site. `type` is the collector's Content-Type (null: none sent); `served` is what the visitor gets.",
+  "cases": [
+    { "type": "application/json; charset=utf-8", "served": "application/json; charset=utf-8" },
+    { "type": "application/json", "served": "application/json" },
+    { "type": "Application/JSON", "served": "Application/JSON" },
+    { "type": "text/plain; charset=utf-8", "served": "text/plain; charset=utf-8" },
+    { "type": "image/webp", "served": "image/webp" },
+    { "type": "text/html; charset=utf-8", "served": "text/plain; charset=utf-8" },
+    { "type": "text/html", "served": "text/plain; charset=utf-8" },
+    { "type": "application/xhtml+xml", "served": "text/plain; charset=utf-8" },
+    { "type": "image/svg+xml", "served": "text/plain; charset=utf-8" },
+    { "type": "application/javascript", "served": "text/plain; charset=utf-8" },
+    { "type": "text/xml", "served": "text/plain; charset=utf-8" },
+    { "type": "application/jsonp", "served": "text/plain; charset=utf-8" },
+    { "type": "application/json-but-html", "served": "text/plain; charset=utf-8" },
+    { "type": "text/plain\r\nSet-Cookie: a=b", "served": "text/plain; charset=utf-8" },
+    { "type": "", "served": "text/plain; charset=utf-8" },
+    { "type": null, "served": "text/plain; charset=utf-8" }
+  ]
+}

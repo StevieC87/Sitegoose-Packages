@@ -1,0 +1,12 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+gemspec
+
+group :test do
+  gem "minitest", ">= 5.0", "< 6" # 6 moved minitest/mock (page_limits_test) out
+  gem "rake"
+  # The Faraday middleware's tests skip themselves without it.
+  gem "faraday"
+end

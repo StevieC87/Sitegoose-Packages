@@ -1,0 +1,434 @@
+{
+  "note": "Canonical cases for the request-rule matcher (firewall.md, 'Request rules'). Every client runs these so the four matchers decide alike: sdk/platform-node (test/requestRules.test.js, used by the Next.js edge too), sdk/platform-php (test/RequestRulesTest.php) and sdk/platform-python (tests/test_request_rules.py). `expect` is the id of the first rule that matches, or null. One rule is deliberately unsafe ((a+)+): every client must refuse the pattern rather than match it, or a single request hangs the site. `patterns` lists regexes every client's safePattern must refuse and must allow, the same lists the backend and collector check before a rule is stored or handed out. Requests marked routed match only the path as a router reads it (firewall.md, 'Matching': ;params dropped, decoded once, . and .. resolved), never the raw text.",
+  "rules": [
+    {
+      "id": "traversal",
+      "action": "block",
+      "ban": 3600,
+      "path": {
+        "contains": [
+          "../",
+          "..%2f"
+        ]
+      }
+    },
+    {
+      "id": "traversal.query",
+      "action": "block",
+      "query": {
+        "contains": [
+          "../",
+          "wp-config.php"
+        ]
+      }
+    },
+    {
+      "id": "php.in.uploads",
+      "action": "block",
+      "path": {
+        "regex": "/(wp-content/uploads|uploads)/[^?]*\\.(php[0-9]?|phtml|phar)$"
+      }
+    },
+    {
+      "id": "webshells",
+      "action": "block",
+      "path": {
+        "exact": [
+          "/shell.php",
+          "/wso.php"
+        ]
+      }
+    },
+    {
+      "id": "wp.install",
+      "action": "block",
+      "path": {
+        "exact": [
+          "/wp-admin/install.php"
+        ]
+      }
+    },
+    {
+      "id": "scanner.ua",
+      "action": "block",
+      "ban": 3600,
+      "ua": {
+        "contains": [
+          "sqlmap",
+          "wpscan"
+        ]
+      }
+    },
+    {
+      "id": "sql.injection",
+      "action": "monitor",
+      "query": {
+        "contains": [
+          "union select",
+          "' or 1=1"
+        ]
+      }
+    },
+    {
+      "id": "wp.user.enum",
+      "action": "monitor",
+      "path": {
+        "prefix": [
+          "/wp-json/wp/v2/users"
+        ]
+      }
+    },
+    {
+      "id": "backup.suffix",
+      "action": "monitor",
+      "path": {
+        "suffix": [
+          ".sql",
+          ".bak"
+        ]
+      }
+    },
+    {
+      "id": "empty.ua.post",
+      "action": "monitor",
+      "methods": [
+        "POST"
+      ],
+      "ua": {
+        "exact": [
+          ""
+        ]
+      }
+    },
+    {
+      "id": "needs.body",
+      "action": "block",
+      "body": {
+        "contains": [
+          "<?php"
+        ]
+      }
+    },
+    {
+      "id": "unsafe.pattern",
+      "action": "block",
+      "path": {
+        "regex": "(a+)+b"
+      }
+    },
+    {
+      "id": "routed.admin",
+      "action": "block",
+      "path": {
+        "prefix": [
+          "/actuator/",
+          "/admin/"
+        ],
+        "exact": [
+          "/a/b"
+        ]
+      }
+    }
+  ],
+  "requests": [
+    {
+      "why": "a plain page is never a match",
+      "method": "GET",
+      "target": "/products/shoes?colour=red",
+      "ua": "Mozilla/5.0",
+      "expect": null
+    },
+    {
+      "why": "traversal in the path",
+      "method": "GET",
+      "target": "/assets/../../wp-config.php",
+      "ua": "Mozilla/5.0",
+      "expect": "traversal"
+    },
+    {
+      "why": "traversal encoded once",
+      "method": "GET",
+      "target": "/assets/..%2f..%2fwp-config.php",
+      "ua": "Mozilla/5.0",
+      "expect": "traversal"
+    },
+    {
+      "why": "upper-case encoding is the same thing",
+      "method": "GET",
+      "target": "/assets/..%2F..%2Fetc/passwd",
+      "ua": "Mozilla/5.0",
+      "expect": "traversal"
+    },
+    {
+      "why": "traversal only in the query",
+      "method": "GET",
+      "target": "/wp-admin/admin-ajax.php?action=show&img=../../wp-config.php",
+      "ua": "Mozilla/5.0",
+      "expect": "traversal.query"
+    },
+    {
+      "why": "the file name alone in a parameter",
+      "method": "GET",
+      "target": "/download?file=wp-config.php",
+      "ua": "Mozilla/5.0",
+      "expect": "traversal.query"
+    },
+    {
+      "why": "PHP in the uploads folder",
+      "method": "GET",
+      "target": "/wp-content/uploads/2026/01/backdoor.php",
+      "ua": "Mozilla/5.0",
+      "expect": "php.in.uploads"
+    },
+    {
+      "why": "an image in uploads is fine",
+      "method": "GET",
+      "target": "/wp-content/uploads/2026/01/photo.jpg",
+      "ua": "Mozilla/5.0",
+      "expect": null
+    },
+    {
+      "why": "PHP in uploads with a query after it",
+      "method": "GET",
+      "target": "/uploads/x.phtml?1=id",
+      "ua": "Mozilla/5.0",
+      "expect": "php.in.uploads"
+    },
+    {
+      "why": "a web shell by name",
+      "method": "POST",
+      "target": "/shell.php",
+      "ua": "Mozilla/5.0",
+      "expect": "webshells"
+    },
+    {
+      "why": "exact means exact: a longer path is not it",
+      "method": "GET",
+      "target": "/themes/shell.php.txt",
+      "ua": "Mozilla/5.0",
+      "expect": null
+    },
+    {
+      "why": "repeated slashes collapse",
+      "method": "GET",
+      "target": "//wp-admin//install.php",
+      "ua": "Mozilla/5.0",
+      "expect": "wp.install"
+    },
+    {
+      "why": "backslashes count as slashes",
+      "method": "GET",
+      "target": "/wp-admin\\install.php",
+      "ua": "Mozilla/5.0",
+      "expect": "wp.install"
+    },
+    {
+      "why": "the scanner names itself",
+      "method": "GET",
+      "target": "/",
+      "ua": "sqlmap/1.7#stable",
+      "expect": "scanner.ua"
+    },
+    {
+      "why": "case in the user agent doesn't matter",
+      "method": "GET",
+      "target": "/",
+      "ua": "WPScan v3.8.22",
+      "expect": "scanner.ua"
+    },
+    {
+      "why": "SQL in a parameter, watched not blocked",
+      "method": "GET",
+      "target": "/search?q=1'+UNION+SELECT+password+FROM+users",
+      "ua": "Mozilla/5.0",
+      "expect": "sql.injection"
+    },
+    {
+      "why": "the same SQL url-encoded",
+      "method": "GET",
+      "target": "/search?q=%27%20or%201%3D1",
+      "ua": "Mozilla/5.0",
+      "expect": "sql.injection"
+    },
+    {
+      "why": "an encoded capital is still that letter: %55NION is UNION, and is lowered after decoding",
+      "method": "GET",
+      "target": "/search?q=%55NION%20SELECT%20password",
+      "ua": "Mozilla/5.0",
+      "expect": "sql.injection"
+    },
+    {
+      "why": "the REST users endpoint, by prefix",
+      "method": "GET",
+      "target": "/wp-json/wp/v2/users?per_page=100",
+      "ua": "Mozilla/5.0",
+      "expect": "wp.user.enum"
+    },
+    {
+      "why": "a suffix match on the path",
+      "method": "GET",
+      "target": "/files/dump.sql",
+      "ua": "Mozilla/5.0",
+      "expect": "backup.suffix"
+    },
+    {
+      "why": "the suffix is of the path, not the query",
+      "method": "GET",
+      "target": "/page?next=/files/dump.sql",
+      "ua": "Mozilla/5.0",
+      "expect": null
+    },
+    {
+      "why": "a POST with no user agent",
+      "method": "POST",
+      "target": "/wp-login.php",
+      "ua": "",
+      "expect": "empty.ua.post"
+    },
+    {
+      "why": "the same request with a user agent passes",
+      "method": "POST",
+      "target": "/wp-login.php",
+      "ua": "Mozilla/5.0",
+      "expect": null
+    },
+    {
+      "why": "method matters: a GET with no user agent is not that rule",
+      "method": "GET",
+      "target": "/wp-login.php",
+      "ua": "",
+      "expect": null
+    },
+    {
+      "why": "a rule that needs the body is skipped, never matched on the path",
+      "method": "POST",
+      "target": "/upload?data=%3C%3Fphp",
+      "ua": "Mozilla/5.0",
+      "expect": null
+    },
+    {
+      "why": "rules are tried in order: the first match wins",
+      "method": "GET",
+      "target": "/wp-content/uploads/../../wp-config.php",
+      "ua": "sqlmap/1.7",
+      "expect": "traversal"
+    },
+    {
+      "why": "a pattern that can blow up is refused, not matched: this would hang the server otherwise",
+      "method": "GET",
+      "target": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+      "ua": "Mozilla/5.0",
+      "expect": null
+    },
+    {
+      "why": "routed: ..;/ climbs out of a segment once ;params are dropped (Tomcat, Spring)",
+      "method": "GET",
+      "target": "/x/..;/actuator/env",
+      "ua": "Mozilla/5.0",
+      "expect": "routed.admin"
+    },
+    {
+      "why": "routed: a . segment is nothing",
+      "method": "GET",
+      "target": "/a/./b",
+      "ua": "Mozilla/5.0",
+      "expect": "routed.admin"
+    },
+    {
+      "why": "routed: a ;param on a segment is dropped",
+      "method": "GET",
+      "target": "/a;jsessionid=1/b",
+      "ua": "Mozilla/5.0",
+      "expect": "routed.admin"
+    },
+    {
+      "why": "routed: ;params and ..; together",
+      "method": "GET",
+      "target": "/x;y/..;/admin/users",
+      "ua": "Mozilla/5.0",
+      "expect": "routed.admin"
+    },
+    {
+      "why": "routed: the exact rule sees the routed path too",
+      "method": "GET",
+      "target": "/wp-admin/./install.php",
+      "ua": "Mozilla/5.0",
+      "expect": "wp.install"
+    },
+    {
+      "why": "routed: a ;param before the file",
+      "method": "GET",
+      "target": "/wp-admin;x/install.php",
+      "ua": "Mozilla/5.0",
+      "expect": "wp.install"
+    },
+    {
+      "why": "routed: .. never climbs above the root",
+      "method": "GET",
+      "target": "/..;/..;/admin/x",
+      "ua": "Mozilla/5.0",
+      "expect": "routed.admin"
+    },
+    {
+      "why": "routed: the same words further down are not the prefix",
+      "method": "GET",
+      "target": "/x/admin/users",
+      "ua": "Mozilla/5.0",
+      "expect": null
+    }
+  ],
+  "patterns": {
+    "refused": [
+      "(a+)+b",
+      "(a*)*",
+      "(ab|cd+)+",
+      "(a)\\1",
+      "(?<=x)y",
+      "unbalanced(",
+      "(a|a)*",
+      "(a|ab)*c",
+      "^(\\w|\\d)+$",
+      "(\\w\\d?)+$",
+      "((ab)+c)+",
+      "(\\\\+)+",
+      "(?:a|b)+",
+      ".*a.*a.*a.*b",
+      ".*=.*x",
+      "\\w+\\d+",
+      "a.{0,900}b.{0,900}c",
+      "[^/]+[^/]+x",
+      "(ab)+.*c",
+      "(?<n>a)",
+      "(?P<n>a)",
+      "(?P=n)",
+      "\\k<n>",
+      "(?i)a",
+      "(?>a)",
+      "(?R)",
+      "(a)(?1)",
+      "(?(1)a|b)",
+      "\\g{1}",
+      "(*FAIL)a",
+      "a++",
+      "a*+",
+      "a{2,}+",
+      "a{2}+b",
+      "(?#c)a"
+    ],
+    "allowed": [
+      "/(wp-content/uploads|uploads|media|files)/[^?]*\\.(php[0-9]?|phtml|phar)$",
+      "/wp-content/plugins/[^/]+/(includes|inc|lib|admin|classes)?/?[^/?]*\\.php$",
+      "(includes|inc|lib)?/?[^/]*\\.php$",
+      "(ab)+",
+      "([a-z0-9_]-)+x",
+      "(?:foo)*bar",
+      "a\\+(b)+",
+      "^/[^/]+/[^/]+/[^/]*\\.php$",
+      "id=[0-9]+&.*union",
+      "\\d{4}-\\d{2}.*x",
+      "(?=a)a",
+      "(?!a)b",
+      "a+?b"
+    ]
+  }
+}

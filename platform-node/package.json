@@ -1,0 +1,62 @@
+{
+  "name": "analytics-platform",
+  "version": "0.3.14",
+  "description": "Firewall, error monitoring and server analytics for your Node server, run from your analytics dashboard.",
+  "author": "steviec87",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/StevieC87/Sitegoose-Packages.git", "directory": "platform-node" },
+  "homepage": "https://github.com/StevieC87/Sitegoose-Packages/tree/main/platform-node#readme",
+  "bugs": { "url": "https://github.com/StevieC87/Sitegoose-Packages/issues" },
+  "keywords": [
+    "firewall",
+    "waf",
+    "rate-limit",
+    "error-monitoring",
+    "analytics",
+    "server-monitoring",
+    "express",
+    "fastify",
+    "nestjs",
+    "nextjs",
+    "koa",
+    "hono"
+  ],
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "start.js",
+    "start.d.ts",
+    "next.d.ts",
+    "hono.d.ts",
+    "lib/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./start": {
+      "types": "./start.d.ts",
+      "default": "./start.js"
+    },
+    "./next": {
+      "types": "./next.d.ts",
+      "default": "./lib/next.js"
+    },
+    "./hono": {
+      "types": "./hono.d.ts",
+      "import": "./lib/hono.mjs",
+      "default": "./lib/hono.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

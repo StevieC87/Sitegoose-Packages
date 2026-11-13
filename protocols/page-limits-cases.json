@@ -1,0 +1,807 @@
+{
+  "note": "Canonical cases for page limits (firewall.md, 'Page limits' and 'Checking a request', step 6). Every firewall client runs them: the Node, Next.js, PHP (and the WordPress plugin's copy), Python, Ruby, Java, .NET and Go packages. Each scenario starts from `base` with `rules` laid over it and `limits` set, on a fresh firewall: no counts yet, no bans. Every request falls inside one window, so the cases need no clock; each client tests a window ending on its own. `target` is the path and query as the request line carries it. `expect` is \"allow\" (passed with nothing reported) or the decision the check returns: its action (block, or monitor for a match that passes), rule and status (429 for a limit even when it only watches, which is what it would have answered). `reports`, where given, is the rules this request reports, in any order; a client whose tests can see its report queue checks them.",
+  "base": {
+    "v": 1,
+    "enabled": true,
+    "mode": "block",
+    "sync": 60,
+    "allow": [
+      "203.0.113.250"
+    ],
+    "deny": [],
+    "lists": [],
+    "shared": [],
+    "goodbots": [
+      "192.0.2.200/29"
+    ],
+    "rate": null,
+    "banned": [],
+    "ban": null,
+    "login": null,
+    "probes": null,
+    "requests": {
+      "rules": []
+    },
+    "flood": null,
+    "origin": null,
+    "challenge": null
+  },
+  "scenarios": [
+    {
+      "name": "a blocking limit turns the fourth login away",
+      "limits": {
+        "rules": [
+          {
+            "id": "wp.login",
+            "action": "block",
+            "limit": 3,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "exact": [
+                "/wp-login.php"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "block",
+            "rule": "limit:wp.login",
+            "status": 429
+          },
+          "why": "over the limit: 429",
+          "reports": [
+            "limit:wp.login"
+          ]
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/wp-login.php",
+          "expect": "allow",
+          "why": "another method isn't counted, and isn't refused"
+        },
+        {
+          "ip": "198.51.100.8",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow",
+          "why": "every address has its own count"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "block",
+            "rule": "limit:wp.login",
+            "status": 429
+          },
+          "why": "still over until the window ends"
+        }
+      ]
+    },
+    {
+      "name": "a watched limit only reports",
+      "limits": {
+        "rules": [
+          {
+            "id": "wp.login",
+            "action": "monitor",
+            "limit": 3,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "exact": [
+                "/wp-login.php"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "monitor",
+            "rule": "limit:wp.login",
+            "status": 429
+          },
+          "why": "passes, reported as monitor",
+          "reports": [
+            "limit:wp.login"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a site in monitor mode blocks with no limit",
+      "rules": {
+        "mode": "monitor"
+      },
+      "limits": {
+        "rules": [
+          {
+            "id": "wp.login",
+            "action": "block",
+            "limit": 3,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "exact": [
+                "/wp-login.php"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "monitor",
+            "rule": "limit:wp.login",
+            "status": 429
+          }
+        }
+      ]
+    },
+    {
+      "name": "exempt, allowed and good-bot addresses are never counted",
+      "limits": {
+        "exempt": [
+          "198.51.100.0/24"
+        ],
+        "rules": [
+          {
+            "id": "wp.login",
+            "action": "block",
+            "limit": 1,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "exact": [
+                "/wp-login.php"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow",
+          "why": "in exempt"
+        },
+        {
+          "ip": "203.0.113.250",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "203.0.113.250",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow",
+          "why": "in allow"
+        },
+        {
+          "ip": "192.0.2.201",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "192.0.2.201",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow",
+          "why": "in goodbots"
+        },
+        {
+          "ip": "203.0.113.9",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "203.0.113.9",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "block",
+            "rule": "limit:wp.login",
+            "status": 429
+          },
+          "why": "anyone else is limited"
+        }
+      ]
+    },
+    {
+      "name": "an IPv6 /64 is one count",
+      "limits": {
+        "rules": [
+          {
+            "id": "wp.login",
+            "action": "block",
+            "limit": 1,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "exact": [
+                "/wp-login.php"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "2001:db8:1:2::1",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "2001:db8:1:2:ffff::9",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "block",
+            "rule": "limit:wp.login",
+            "status": 429
+          },
+          "why": "same /64"
+        },
+        {
+          "ip": "2001:db8:1:3::1",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow",
+          "why": "another /64"
+        },
+        {
+          "ip": "::ffff:198.51.100.9",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.9",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "block",
+            "rule": "limit:wp.login",
+            "status": 429
+          },
+          "why": "an IPv4-mapped address is the IPv4 address"
+        }
+      ]
+    },
+    {
+      "name": "the path is matched raw, decoded and as routed",
+      "limits": {
+        "rules": [
+          {
+            "id": "wp.login",
+            "action": "block",
+            "limit": 1,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "exact": [
+                "/wp-login.php"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php?redirect_to=x",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/WP-LOGIN.PHP",
+          "expect": {
+            "action": "block",
+            "rule": "limit:wp.login",
+            "status": 429
+          },
+          "why": "lower-cased"
+        },
+        {
+          "ip": "198.51.100.8",
+          "method": "POST",
+          "target": "/wp%2Dlogin.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.8",
+          "method": "POST",
+          "target": "/./wp-login.php",
+          "expect": {
+            "action": "block",
+            "rule": "limit:wp.login",
+            "status": 429
+          },
+          "why": "routed form, same count as the decoded one"
+        },
+        {
+          "ip": "198.51.100.10",
+          "method": "POST",
+          "target": "//blog/../wp-login.php;x=1",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.10",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "block",
+            "rule": "limit:wp.login",
+            "status": 429
+          }
+        }
+      ]
+    },
+    {
+      "name": "a query matcher",
+      "limits": {
+        "rules": [
+          {
+            "id": "woo.add-to-cart",
+            "action": "block",
+            "limit": 2,
+            "window": 60,
+            "query": {
+              "contains": [
+                "add-to-cart="
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/shop/?add-to-cart=12",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/shop/",
+          "expect": "allow",
+          "why": "no query: not counted"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/?add-to-cart=13&quantity=1",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/product/x?ADD-TO-CART=14",
+          "expect": {
+            "action": "block",
+            "rule": "limit:woo.add-to-cart",
+            "status": 429
+          },
+          "why": "lower-cased"
+        }
+      ]
+    },
+    {
+      "name": "each: path counts every page apart, and never static files",
+      "limits": {
+        "rules": [
+          {
+            "id": "any",
+            "action": "block",
+            "limit": 2,
+            "window": 600,
+            "each": "path",
+            "path": {
+              "prefix": [
+                "/"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/a",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/a",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/b",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/b?x=1",
+          "expect": "allow",
+          "why": "the query isn't part of the page"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/a",
+          "expect": {
+            "action": "block",
+            "rule": "limit:any",
+            "status": 429
+          }
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/c",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/style.css",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/style.css",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/style.css",
+          "expect": "allow",
+          "why": "a static file never counts"
+        }
+      ]
+    },
+    {
+      "name": "several limits count at once; the first over in order decides",
+      "limits": {
+        "rules": [
+          {
+            "id": "checkout",
+            "action": "block",
+            "limit": 2,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "prefix": [
+                "/checkout"
+              ]
+            }
+          },
+          {
+            "id": "posts",
+            "action": "block",
+            "limit": 1,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "prefix": [
+                "/"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/checkout",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/checkout",
+          "expect": {
+            "action": "block",
+            "rule": "limit:posts",
+            "status": 429
+          },
+          "why": "checkout is at 2 of 2, posts at 2 of 1"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/checkout",
+          "expect": {
+            "action": "block",
+            "rule": "limit:checkout",
+            "status": 429
+          },
+          "why": "both over now: checkout comes first"
+        }
+      ]
+    },
+    {
+      "name": "a watched limit doesn't stop the rate limit",
+      "rules": {
+        "rate": {
+          "limit": 3,
+          "window": 60
+        }
+      },
+      "limits": {
+        "rules": [
+          {
+            "id": "wp.login",
+            "action": "monitor",
+            "limit": 1,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "exact": [
+                "/wp-login.php"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "monitor",
+            "rule": "limit:wp.login",
+            "status": 429
+          }
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "monitor",
+            "rule": "limit:wp.login",
+            "status": 429
+          }
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "block",
+            "rule": "rate",
+            "status": 429
+          },
+          "why": "over the site-wide limit too: rate decides, the watched limit is reported as well",
+          "reports": [
+            "limit:wp.login",
+            "rate"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "limits with nothing to match, or a regex only, are ignored",
+      "limits": {
+        "rules": [
+          {
+            "id": "empty",
+            "action": "block",
+            "limit": 1,
+            "window": 60
+          },
+          {
+            "id": "regex.only",
+            "action": "block",
+            "limit": 1,
+            "window": 60,
+            "path": {
+              "regex": "^/"
+            }
+          },
+          {
+            "id": "bad.limit",
+            "action": "block",
+            "limit": 0,
+            "window": 60,
+            "path": {
+              "prefix": [
+                "/"
+              ]
+            }
+          },
+          {
+            "id": "Bad Id",
+            "action": "block",
+            "limit": 1,
+            "window": 60,
+            "path": {
+              "prefix": [
+                "/"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/x",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/x",
+          "expect": "allow"
+        },
+        {
+          "ip": "198.51.100.7",
+          "method": "GET",
+          "target": "/x",
+          "expect": "allow"
+        }
+      ]
+    },
+    {
+      "name": "an address already refused by an earlier step isn't counted",
+      "rules": {
+        "deny": [
+          "198.51.100.7"
+        ]
+      },
+      "limits": {
+        "rules": [
+          {
+            "id": "wp.login",
+            "action": "block",
+            "limit": 1,
+            "window": 60,
+            "methods": [
+              "POST"
+            ],
+            "path": {
+              "exact": [
+                "/wp-login.php"
+              ]
+            }
+          }
+        ]
+      },
+      "requests": [
+        {
+          "ip": "198.51.100.7",
+          "method": "POST",
+          "target": "/wp-login.php",
+          "expect": {
+            "action": "block",
+            "rule": "deny",
+            "status": 403
+          }
+        }
+      ]
+    }
+  ]
+}
