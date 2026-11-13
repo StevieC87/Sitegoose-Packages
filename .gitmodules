@@ -1,0 +1,10 @@
+# Two packages live in repositories of their own, because their registries need
+# one repository per package: Go modules are fetched by import path, and
+# Packagist reads composer.json from a repository root. They appear here as
+# submodules, so this repository stays the one place to find every package.
+[submodule "platform-go"]
+	path = platform-go
+	url = https://github.com/sitegoose/sitegoose-go.git
+[submodule "platform-php"]
+	path = platform-php
+	url = https://github.com/StevieC87/analytics-platform-php.git
