@@ -210,7 +210,19 @@ Describe 'when a run is due' {
         $c = Get-BackupConfig (New-BackupTestConfig (Join-Path $TestDrive 's') $raw)
         $c.schedule | Should -Be 'weekly'
         $c.weekday | Should -Be 'fri'
-        $c.temp | Should -BeLike 'D:\big*sitegoose-backup-temp'
+        $c.download_temp | Should -BeLike 'D:\big*sitegoose-backup-temp'
+        # Only the download goes to temp_dir, a drive every account may read:
+        # option files with passwords and dumps stay in the state folder.
+        $c.temp | Should -Be (Join-Path $c.config.state_dir 'backup-temp')
+        $secret = New-SecretFile $c 'password="hunter2"' '.cnf'
+        try { Split-Path -Parent $secret | Should -Be $c.temp } finally { Remove-Item -LiteralPath $secret -Force }
+    }
+    It 'makes its own folder when temp_dir is not set, and both go in one cleanup' {
+        $raw = ConvertFrom-Json '{"repository": "C:\\repo"}'
+        $c = Get-BackupConfig (New-BackupTestConfig (Join-Path $TestDrive 't') $raw)
+        $c.download_temp | Should -Be $c.temp
+        New-PrivateFolder $c.download_temp
+        Test-Path -LiteralPath $c.temp -PathType Container | Should -BeTrue
     }
     It 'never swaps a drive or a Windows folder whole' {
         'C:\' -match $script:SystemFolderPattern | Should -BeTrue

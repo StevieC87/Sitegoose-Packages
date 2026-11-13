@@ -3538,12 +3538,32 @@ def watched_file(name):
     return "." in name and name.rsplit(".", 1)[-1].lower() in FILE_EXTENSIONS
 
 
+def open_regular(path, expect=None):
+    """A descriptor on the regular file at `path`, or OSError. The scan runs
+    as root over folders a site's account writes to, so a path is never
+    trusted twice: a symbolic link isn't followed (O_NOFOLLOW) and what was
+    opened is checked once open, not before. With `expect`, the lstat the
+    caller made, it must also be that very file (same device and inode), so
+    one swapped in between the two calls is skipped rather than read."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_NOCTTY", 0))
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("not a regular file: %s" % path)
+        if expect is not None and (info.st_dev, info.st_ino) != (expect.st_dev, expect.st_ino):
+            raise OSError("replaced while being read: %s" % path)
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
 def file_signals(path):
     found = []
     if "/uploads/" in path and PHP_EXT.search(path):
         found.append("code_in_uploads")
     try:
-        with open(path, "rb") as f:
+        with os.fdopen(open_regular(path), "rb") as f:
             head = f.read(SIGNAL_BYTES)
     except OSError:
         return found
@@ -3551,9 +3571,9 @@ def file_signals(path):
     return found
 
 
-def hash_file(path):
+def hash_file(path, expect=None):
     digest = hashlib.sha256()
-    with open(path, "rb") as f:
+    with os.fdopen(open_regular(path, expect), "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -3592,7 +3612,7 @@ def scan_files(roots, exclude, previous, full):
                     current[path] = old
                     continue
                 try:
-                    current[path] = [hash_file(path), st.st_size, int(st.st_mtime)]
+                    current[path] = [hash_file(path, st), st.st_size, int(st.st_mtime)]
                 except OSError:
                     continue
     return current, truncated
@@ -8137,7 +8157,29 @@ GIT_ENV = {
     "GIT_NO_LAZY_FETCH": "1",
     # Nor may a read refresh the index on its way past.
     "GIT_OPTIONAL_LOCKS": "0",
+    # Not a command a person typed: a transport that is really a program
+    # (`ext::`), a local file, or any helper git doesn't know is refused.
+    "GIT_PROTOCOL_FROM_USER": "0",
+    # A password asked for is answered with nothing, never by a program the
+    # repository's config names (core.askPass).
+    "GIT_ASKPASS": "/bin/true",
 }
+# A repository's own .git/config is written by whoever can write in the folder
+# (an upload folder: the site's account, or what got into it), and git takes
+# addresses and programs from it. These stand above that file for every read
+# here (GIT_CONFIG_COUNT, git 2.31 and later): only https or ssh is dialled,
+# no proxy is taken from the config, TLS stays checked, and no credential,
+# signing or file-watching program is run from it.
+GIT_CONFIG = (
+    ("protocol.allow", "never"),
+    ("protocol.https.allow", "always"),
+    ("protocol.ssh.allow", "always"),
+    ("http.proxy", ""),
+    ("http.sslVerify", "true"),
+    ("credential.helper", ""),
+    ("log.showSignature", "false"),
+    ("core.fsmonitor", "false"),
+)
 
 
 def app_paths(paths):
@@ -8174,23 +8216,28 @@ def folder_owner(path):
     return owner.pw_name, owner.pw_dir or "/"
 
 
-def git(folder, owner, *args):
+def git(folder, owner, *args, config=()):
     """(exit code, stdout) of one read-only git command run as `owner`, or
-    (None, "") when it failed to run, timed out or isn't a read."""
+    (None, "") when it failed to run, timed out or isn't a read. `config`:
+    (key, value) settings for this command on top of GIT_CONFIG."""
     if not args or args[0] not in GIT_READS or (args[0] == "config" and args[1:2] != ("--get",)):
         return None, ""
     name, home = owner
     env = dict(GIT_ENV, HOME=home, USER=name, LOGNAME=name, LANG="C", LC_ALL="C",
                PATH=os.environ.get("PATH") or "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    settings = GIT_CONFIG + tuple(config)
+    env["GIT_CONFIG_COUNT"] = str(len(settings))
+    for i, (key, value) in enumerate(settings):
+        env["GIT_CONFIG_KEY_%d" % i], env["GIT_CONFIG_VALUE_%d" % i] = key, value
     command = ["git", "-C", folder] + list(args)
     if os.geteuid() == 0 and name != "root":
         command = ["runuser", "-u", name, "--"] + command
     return _command(command, env=env, cwd=folder)
 
 
-def git_out(folder, owner, *args):
+def git_out(folder, owner, *args, **options):
     """git's first line of output when it succeeded, else None."""
-    code, out = git(folder, owner, *args)
+    code, out = git(folder, owner, *args, **options)
     return out.strip() if code == 0 and out.strip() else None
 
 
@@ -8269,10 +8316,38 @@ def git_upstream(folder, owner, branch):
     return upstream
 
 
+def remote_reachable(url):
+    """Whether a remote's address may be dialled from here: https or ssh, to a
+    host with a name. The address is the repository's own config, written by
+    whoever can write in the folder, so the agent must not be made to reach
+    what it names: an address inside the network (plain http, a bare IP, this
+    machine), a file, or a command dressed as a transport (`ext::`)."""
+    url = (url or "").strip()
+    scheme = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*)://", url)
+    if scheme:
+        if scheme.group(1).lower() not in ("https", "ssh"):
+            return False
+    elif "::" in url or not re.match(r"^([^@/:\s]+@)?[A-Za-z0-9.-]+:", url):
+        # Neither a URL nor scp-like `[user@]host:path`: a helper (`ext::`),
+        # a folder, a share.
+        return False
+    host = repo_host(url)
+    if not host or host == "localhost" or host.endswith(".localhost"):
+        return False
+    return not all(part.isdigit() for part in host.split("."))
+
+
 def remote_head(folder, owner, remote, branch):
     """The commit the branch is on at the remote, or None. Reads the remote's
-    list of branches; nothing is downloaded and nothing written."""
-    code, out = git(folder, owner, "ls-remote", remote, "refs/heads/" + branch)
+    list of branches; nothing is downloaded and nothing written. The address
+    is taken as git would dial it (the config's rewrites applied) and checked
+    first: an https or ssh address of a named host, or the remote isn't asked."""
+    # No proxy for this remote from the config either (remote.<name>.proxy).
+    config = (("remote.%s.proxy" % remote, ""),)
+    url = git_out(folder, owner, "ls-remote", "--get-url", remote, config=config)
+    if not remote_reachable(url):
+        return None
+    code, out = git(folder, owner, "ls-remote", remote, "refs/heads/" + branch, config=config)
     if code != 0:
         return None
     for line in out.splitlines():

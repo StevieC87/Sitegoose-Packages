@@ -165,6 +165,31 @@ class Scanning(unittest.TestCase):
         self.assertNotIn("hunter2", blob)
         self.assertEqual(set(current[path][0:1][0]) <= set("0123456789abcdef"), True)
 
+    def test_a_link_swapped_in_after_the_check_is_not_read(self):
+        # The scan runs as root: a path checked with lstat and then opened by
+        # name could be a link to /etc/shadow by the time it is opened.
+        link = os.path.join(self.dir, "swapped.php")
+        os.symlink("/etc/passwd", link)
+        with self.assertRaises(OSError):
+            agent.hash_file(link)
+        self.assertEqual(agent.file_signals(link), [])
+        self.assertEqual(agent.file_signals(os.path.join(self.dir, "uploads", "missing.php")), ["code_in_uploads"])
+        fifo = os.path.join(self.dir, "pipe.php")
+        os.mkfifo(fifo)
+        with self.assertRaises(OSError):
+            agent.hash_file(fifo)
+
+    def test_the_file_hashed_is_the_file_that_was_checked(self):
+        first = self.write("a.php", b"<?php // one")
+        other = self.write("b.php", b"<?php // two")
+        seen = os.lstat(first)
+        self.assertEqual(agent.hash_file(first, seen), agent.hash_file(first))
+        os.replace(other, first)  # another file under the same name
+        with self.assertRaises(OSError):
+            agent.hash_file(first, seen)
+        current, _ = agent.scan_files([self.dir], [], {}, True)
+        self.assertEqual(set(current), {first})
+
 
 class Machine(unittest.TestCase):
     """How the machine is doing (sdk/protocols/resources.md). The rule the
@@ -766,6 +791,7 @@ class AppsGit(unittest.TestCase):
             "config --get branch.main.merge": (0, "refs/heads/main\n"),
             "config --get remote.origin.url": (0, "https://x-access-token:ghp_SECRET@github.com/acme/shop.git\n"),
             "log -1": (0, "Fix checkout\x001762160000\n"),
+            "ls-remote --get-url origin": (0, "https://x-access-token:ghp_SECRET@github.com/acme/shop.git\n"),
             "ls-remote origin refs/heads/main": (0, "%s\trefs/heads/main\n" % remote) if remote else (128, ""),
             "cat-file -e": (0, "") if local else (128, ""),
             "merge-base --is-ancestor %s %s" % (self.HEAD, self.REMOTE): (0 if ancestor else 1, ""),
@@ -775,6 +801,10 @@ class AppsGit(unittest.TestCase):
 
     def app(self, checks=None):
         return agent.git_app(self.folder, {} if checks is None else checks, 1762160000)
+
+    def asked(self):
+        """The calls that reached the remote (`ls-remote --get-url` reads the config)."""
+        return [c for c, _ in self.calls if "ls-remote" in c and "--get-url" not in c]
 
     def test_behind_counts_the_commits(self):
         self.repo()
@@ -820,10 +850,9 @@ class AppsGit(unittest.TestCase):
         checks = {}
         agent.git_app(self.folder, checks, 1000)
         agent.git_app(self.folder, checks, 1000 + agent.APPS_REMOTE_EVERY - 1)
-        asked = [c for c, _ in self.calls if "ls-remote" in c]
-        self.assertEqual(len(asked), 1)
+        self.assertEqual(len(self.asked()), 1)
         agent.git_app(self.folder, checks, 1000 + agent.APPS_REMOTE_EVERY)
-        self.assertEqual(len([c for c, _ in self.calls if "ls-remote" in c]), 2)
+        self.assertEqual(len(self.asked()), 2)
 
     def test_a_pull_asks_the_remote_again_rather_than_reading_ahead(self):
         # Checked while on the old commit, then pulled: the remote seen an
@@ -836,7 +865,7 @@ class AppsGit(unittest.TestCase):
         self.answers["ls-remote origin refs/heads/main"] = (0, "%s\trefs/heads/main\n" % self.REMOTE)
         app = agent.git_app(self.folder, checks, 1060)
         self.assertEqual(app["state"], "current")
-        self.assertEqual(len([c for c, _ in self.calls if "ls-remote" in c]), 2)
+        self.assertEqual(len(self.asked()), 2)
         self.assertNotEqual(old, self.REMOTE)
 
     def test_git_only_reads_and_never_prompts(self):
@@ -876,6 +905,48 @@ class AppsGit(unittest.TestCase):
         app = self.app()
         self.assertEqual(app["state"], "unknown")
         self.assertFalse([c for c, _ in self.calls if "ls-remote" in c])
+
+    def test_a_remote_address_the_agent_must_not_reach_is_not_asked(self):
+        # The address is the repository's own config, which whoever can write
+        # in an upload folder writes: a planted .git must not make the agent
+        # dial into the network, open a file or run a command.
+        for url in ("http://169.254.169.254/latest/meta-data/", "https://10.0.0.5/repo.git", "https://localhost/x.git",
+                    "https://db.localhost/x.git", "ext::sh -c 'touch /tmp/pwned'", "file:///etc", "git://github.com/a/b.git",
+                    "/srv/git/repo.git", "\\\\share\\repo", ""):
+            self.repo()
+            self.calls = []
+            self.answers["ls-remote --get-url origin"] = (0, url + "\n") if url else (128, "")
+            app = self.app()
+            self.assertEqual((app["state"], app["remote"]), ("unknown", None), url)
+            self.assertFalse(self.asked(), url)
+        # The address as git would dial it: a rewrite (insteadOf) in the config
+        # of a good-looking remote.origin.url is what is checked.
+        self.repo()
+        self.calls = []
+        self.answers["ls-remote --get-url origin"] = (0, "http://169.254.169.254/\n")
+        self.assertEqual(self.app()["state"], "unknown")
+        self.assertFalse(self.asked())
+        for url in ("https://github.com/acme/shop.git", "ssh://git@gitlab.example.com:2222/acme/shop.git", "git@github.com:acme/shop.git",
+                    "https://x-access-token:ghp_SECRET@github.com/acme/shop.git"):
+            self.repo()
+            self.calls = []
+            self.answers["ls-remote --get-url origin"] = (0, url + "\n")
+            self.assertEqual(self.app()["state"], "behind", url)
+            self.assertEqual(len(self.asked()), 1, url)
+
+    def test_the_repositorys_own_config_cannot_steer_a_read(self):
+        self.repo()
+        self.app()
+        for args, env in self.calls:
+            settings = {env["GIT_CONFIG_KEY_%d" % i]: env["GIT_CONFIG_VALUE_%d" % i] for i in range(int(env["GIT_CONFIG_COUNT"]))}
+            self.assertEqual(settings["protocol.allow"], "never", args)
+            self.assertEqual((settings["protocol.https.allow"], settings["protocol.ssh.allow"]), ("always", "always"))
+            self.assertEqual((settings["http.proxy"], settings["credential.helper"]), ("", ""))
+            self.assertEqual(settings["http.sslVerify"], "true")
+            self.assertEqual(env["GIT_PROTOCOL_FROM_USER"], "0")
+            self.assertEqual(env["GIT_ASKPASS"], "/bin/true")
+            if "ls-remote" in args:
+                self.assertEqual(settings["remote.origin.proxy"], "")
 
 
 class AppsFinding(unittest.TestCase):

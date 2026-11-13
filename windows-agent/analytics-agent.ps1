@@ -2703,11 +2703,16 @@ function Get-BackupConfig {
     $b.folders = @(@(Get-EntryList (Get-Prop $raw 'folders')) | Where-Object { $_ -is [string] -and $_ -match '^[A-Za-z]:\\' } |
         ForEach-Object { $_.TrimEnd('\') } | Select-Object -Unique)
     $b.state_file = Join-Path $Config.state_dir 'backups.json'
+    # Option files with passwords and database dumps are made here, inside the
+    # state folder, which only SYSTEM and Administrators may open. Never in
+    # "temp_dir": a data drive lets every account on the machine read it.
     $b.temp = Join-Path $Config.state_dir 'backup-temp'
-    # A download is made here first: a drive with room for it. A folder of
-    # ours inside it, since what's left in it after a day is deleted.
+    # A download is made in download_temp first: a drive with room for it,
+    # when "temp_dir" names one. A folder of ours inside it, made private
+    # (New-PrivateFolder), since what's left in it after a day is deleted.
+    $b.download_temp = $b.temp
     $tempDir = [string](Get-Prop $raw 'temp_dir' '')
-    if ($tempDir -match '^[A-Za-z]:\\') { $b.temp = [IO.Path]::Combine($tempDir, 'sitegoose-backup-temp') }
+    if ($tempDir -match '^[A-Za-z]:\\') { $b.download_temp = [IO.Path]::Combine($tempDir, 'sitegoose-backup-temp') }
     $b.cache = Join-Path $Config.state_dir 'restic-cache'
     $b.config = $Config
     return $b
@@ -2911,11 +2916,50 @@ function Get-ToolFor {
     return $null
 }
 
+$script:PrivateFolders = @{}
+
+function New-PrivateFolder {
+    # The folder made if missing and, on Windows, open to SYSTEM and
+    # Administrators only, whatever the folder above it allows: "temp_dir"
+    # on a data drive lets every user in, and what the agent puts in its
+    # folders is a database dump, an option file with a password, or a
+    # backup made into one file. A folder already there was made by whoever
+    # got there first, and an owner can always put the access back, so
+    # Administrators take it over (as install.ps1 does for
+    # %ProgramData%\AnalyticsAgent); a junction or link in its place is
+    # refused rather than written through. Once per folder per process.
+    param([string]$Path)
+    if ($script:PrivateFolders.ContainsKey($Path)) { return }
+    $existed = Test-Path -LiteralPath $Path
+    if (-not $existed) { New-Item -ItemType Directory -Path $Path -Force | Out-Null }
+    if ($env:OS -eq 'Windows_NT') {
+        if (Test-ReparsePoint $Path) { throw "$Path is a junction or link: remove it, the agent makes the folder itself" }
+        $icacls = Join-Path $env:windir 'System32\icacls.exe'
+        if ($existed) {
+            & $icacls $Path '/setowner' '*S-1-5-32-544' '/T' '/C' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "could not make Administrators the owner of $Path" }
+        }
+        $acl = New-Object System.Security.AccessControl.DirectorySecurity
+        $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'))
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($sid in 'S-1-5-18', 'S-1-5-32-544') {
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule ((New-Object Security.Principal.SecurityIdentifier $sid), 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')))
+        }
+        Set-Acl -LiteralPath $Path -AclObject $acl
+        # What was already inside goes back to inheriting only that.
+        if ($existed -and @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+            & $icacls (Join-Path $Path '*') '/reset' '/T' '/C' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "could not reset access to what is inside $Path" }
+        }
+    }
+    $script:PrivateFolders[$Path] = $true
+}
+
 function New-SecretFile {
-    # A file only SYSTEM and Administrators can read (it inherits the state
-    # folder's ACL), for a password no command line may show.
+    # A file only SYSTEM and Administrators can read, in the state folder's
+    # backup-temp (New-PrivateFolder), for a password no command line may show.
     param($Bc, [string]$Text, [string]$Ending)
-    if (-not (Test-Path -LiteralPath $Bc.temp)) { New-Item -ItemType Directory -Path $Bc.temp -Force | Out-Null }
+    New-PrivateFolder $Bc.temp
     $path = Join-Path $Bc.temp ('secret-' + [guid]::NewGuid().ToString('N') + $Ending)
     [IO.File]::WriteAllText($path, $Text, (New-Object System.Text.UTF8Encoding($false)))
     return $path
@@ -3092,7 +3136,8 @@ function Backup-Database {
         try { $names = @(Get-DbNames $Bc $Db $session) } catch { return @([ordered]@{ kind = 'database'; name = $Db.label; ok = $false; error = $_.Exception.Message }) }
         $folder = $Bc.temp
         if ($Db.kind -eq 'sqlserver') { $folder = Get-SqlBackupFolder $Bc $Db $session }
-        if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+        if ($folder -eq $Bc.temp) { New-PrivateFolder $folder }
+        elseif (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
         foreach ($n in $names) {
             $name = (Get-ItemPrefix $Db) + '/' + $n + (Get-DumpEnding $Db.kind)
             if ($null -ne $Only -and $Only -notcontains $name) { continue }
@@ -3485,14 +3530,15 @@ function Format-ByteSize {
 }
 
 function Assert-BackupRoom {
-    # The temp folder made, with room for about $Items' size and some over.
+    # The download folder made (private, whatever drive it is on), with room
+    # for about $Items' size and some over.
     param($Bc, $Items)
-    if (-not (Test-Path -LiteralPath $Bc.temp)) { New-Item -ItemType Directory -Path $Bc.temp -Force | Out-Null }
+    New-PrivateFolder $Bc.download_temp
     $need = [long]$script:BackupDiskSpare
     foreach ($i in @($Items)) { if ($i.bytes) { $need += [long]$i.bytes } }
-    $free = (New-Object IO.DriveInfo ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Bc.temp)))).AvailableFreeSpace
+    $free = (New-Object IO.DriveInfo ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Bc.download_temp)))).AvailableFreeSpace
     if ($free -lt $need) {
-        throw ('making it needs about {0} free in {1}, and {2} is ("temp_dir" under "backups" puts it elsewhere)' -f (Format-ByteSize $need), $Bc.temp, (Format-ByteSize $free))
+        throw ('making it needs about {0} free in {1}, and {2} is ("temp_dir" under "backups" puts it elsewhere)' -f (Format-ByteSize $need), $Bc.download_temp, (Format-ByteSize $free))
     }
 }
 
@@ -3511,7 +3557,7 @@ function Invoke-BackupDownload {
     $filename = Get-BackupDownloadName $Run $items
     Assert-BackupRoom $Bc $items
     if ($Hosted) { return Invoke-HostedDownload $Bc $items $filename $Hosted $RequestId }
-    $file = Join-Path $Bc.temp ('backup-download-' + [guid]::NewGuid().ToString('N'))
+    $file = Join-Path $Bc.download_temp ('backup-download-' + [guid]::NewGuid().ToString('N'))
     try {
         $out = [IO.File]::Create($file)
         try { Write-BackupPackage $Bc $items $out } finally { $out.Dispose() }
@@ -3733,7 +3779,7 @@ function Invoke-HostedDownload {
     $wrapped = Protect-OaepSha256 (Get-Prop $Hosted 'public_key') $secret
     $limit = Get-WholeNumber (Get-Prop $Hosted 'max_bytes') 1 1e15
     if ($null -eq $limit) { throw "the dashboard didn't say how big a file may be" }
-    $path = Join-Path $Bc.temp ('backup-download-' + [guid]::NewGuid().ToString('N') + '.sgdl')
+    $path = Join-Path $Bc.download_temp ('backup-download-' + [guid]::NewGuid().ToString('N') + '.sgdl')
     try {
         $file = [IO.File]::Create($path)
         $sealer = $null
@@ -3861,7 +3907,8 @@ function Restore-BackupItem {
     $session = Get-DbSession $Bc $db
     $folder = $Bc.temp
     if ($db.kind -eq 'sqlserver') { $folder = Get-SqlBackupFolder $Bc $db $session }
-    if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+    if ($folder -eq $Bc.temp) { New-PrivateFolder $folder }
+    elseif (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
     $file = Join-Path $folder ('sitegoose-restore-' + [guid]::NewGuid().ToString('N') + (Get-DumpEnding $db.kind))
     try {
         Export-BackupItem $Bc $Item $file
@@ -4072,11 +4119,14 @@ function Clear-BackupLeftovers {
         if ($now - [double]$e.at -lt $script:BackupAsideKeep) { $aside += $e }
         elseif ((Split-Path -Leaf ([string]$e.path)) -like '.sitegoose-before-*') { Remove-Item -LiteralPath ([string]$e.path) -Recurse -Force -ErrorAction SilentlyContinue }
     }
-    # What a killed run left in the temp folder: option files with passwords, dumps.
-    if (Test-Path -LiteralPath $Bc.temp) {
-        Get-ChildItem -LiteralPath $Bc.temp -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddDays(-1) } |
-            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+    # What a killed run left in the temp folders: option files with passwords
+    # and dumps in the state's, downloads half made in download_temp.
+    foreach ($folder in @(@($Bc.temp, $Bc.download_temp) | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $folder) {
+            Get-ChildItem -LiteralPath $folder -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddDays(-1) } |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+        }
     }
     if ($keep.Count -ne @($state.downloads).Count -or $aside.Count -ne @($state.aside).Count) {
         $state.downloads = $keep
