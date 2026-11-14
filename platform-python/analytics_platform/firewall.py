@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 
 from . import challenge as browser_check
-from .core import Periodic, RETRY, header
+from .core import Periodic, RETRY, header, origin_form
 from .request_rules import MAX_TEXT, _decode_once, compile_limits, compile_rules, match_limits, match_request, normalize_target, prepare
 
 PROTOCOL = 1
@@ -139,10 +139,9 @@ def is_static(path, method="GET"):
     be a file: one with a "." or ".." segment, a ";", a "\\", an encoded "/"
     or a "%xx" left after decoding is a page, so "/static/../login",
     "/static%2F..%2Flogin", "/login;x.css" and "/login%3Bx.css" all count. A
-    browser asks for its files with none of those. Nor is a path past the
-    rules' 2,000 characters: cut there, "/search/xxx...x.css/more" would end
-    in .css and flood a catch-all route past the limits. Only GET and HEAD
-    fetch a file."""
+    browser asks for its files with none of those. Nor is a path over 2,000
+    characters: no asset has a name that long. Only GET and HEAD fetch a
+    file."""
     if (method or "") not in _FETCHES:
         return False
     raw = re.split(r"[?#]", str(path or ""), 1)[0]
@@ -566,12 +565,18 @@ class Firewall:
         self.flush()
         return FLUSH_EVERY
 
-    def check(self, ip, method="", path="", user_agent="", accept="", cookie="", now=None):
+    def check(self, ip, method="", path="", user_agent="", accept="", cookie="", now=None, fetch_site=""):
         """-> {"action": "allow" | "block" | "monitor", "rule": ..., "status": ...}.
         Allowed addresses skip every other rule. accept and cookie (the
         request's headers) are for the browser check: rule "challenge",
-        status 503, answered with challenge_page()."""
+        status 503, answered with challenge_page(). fetch_site: the request's
+        Sec-Fetch-Site header."""
         allow = {"action": "allow", "rule": "", "status": 200}
+        path = origin_form(path)
+        # Another site made the browser send this (an <img> of /.env, a
+        # page asked for 120 times a minute), from the visitor's own address:
+        # refused as ever, but nobody is banned for it, here or elsewhere.
+        foreign = str(fetch_site or "").strip().lower() in ("cross-site", "same-site")
         rules = self.rules
         if not rules or not rules["enabled"]:
             return allow
@@ -583,7 +588,7 @@ class Firewall:
         if not rule and is_probe(path, rules["probes"]):
             rule = "probe"
             # Asking for a secret file: banned here in block mode; the report bans it on the other servers.
-            if action == "block":
+            if action == "block" and not foreign:
                 self._ban_here(str(ip), rules["probes"]["ban"])
         matched = None
         limits = rules.get("limits")
@@ -597,7 +602,7 @@ class Firewall:
                 # A rule the dashboard only watches passes even in block mode;
                 # one that blocks also bans the address here, as a flood does.
                 action = "block" if action == "block" and matched["action"] == "block" else "monitor"
-                if action == "block" and matched["ban"]:
+                if action == "block" and matched["ban"] and not foreign:
                     self._ban_here(str(ip), matched["ban"])
         # A static file isn't counted toward the page limits or the rate,
         # only compared with the counts so far: an address already over them
@@ -625,11 +630,16 @@ class Firewall:
                 and self._over_rate(str(ip), rules["rate"], peek=static)):
             rule = "rate"
             # Banned here straight away in block mode, as a probe is; the report bans it on the other servers.
-            if action == "block":
+            if action == "block" and not foreign:
                 self._ban_here(str(ip), rules["ban"])
         def event(name, act):
+            # Reported as only watched, so the collector bans it on no other
+            # server and counts nothing toward `shared`.
+            if foreign and act == "block" and (name in ("probe", "rate") or name.startswith("request:")):
+                act = "monitor"
             return {"ip": str(ip), "rule": name, "action": act,
-                    "method": str(method)[:10], "path": str(path).split("?")[0][:300], "user_agent": str(user_agent)[:300]}
+                    "method": str(method)[:10], "path": re.split(r"[?#]", str(path), 1)[0][:300],
+                    "user_agent": str(user_agent)[:300]}
 
         # A watched page limit is reported whatever comes after it: the rate
         # limit or the browser check deciding doesn't hide it.
@@ -694,6 +704,7 @@ class Firewall:
         beacons are never rate-limited, checked or matched against request
         rules. -> the same shape as check()."""
         allow = {"action": "allow", "rule": "", "status": 200}
+        path = origin_form(path)
         rules = self.rules
         if not rules or not rules["enabled"]:
             return allow
@@ -705,7 +716,7 @@ class Firewall:
             return allow
         action = "block" if (self.mode or rules["mode"]) == "block" else "monitor"
         self._report({"ip": str(ip), "rule": rule, "action": action, "method": str(method)[:10],
-                      "path": str(path).split("?")[0][:300], "user_agent": str(user_agent)[:300]})
+                      "path": re.split(r"[?#]", str(path), 1)[0][:300], "user_agent": str(user_agent)[:300]})
         return {"action": action, "rule": rule, "status": 403}
 
     def _needs_check(self, rules, key, ip, method, path, accept, cookie, now):

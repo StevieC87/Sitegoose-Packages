@@ -453,7 +453,8 @@ class Platform:
         try:
             ip = firewall.client_ip(remote, headers)
             decision = firewall.check(ip, method, path, header(headers, "user-agent"),
-                                      header(headers, "accept"), header(headers, "cookie"))
+                                      header(headers, "accept"), header(headers, "cookie"),
+                                      fetch_site=header(headers, "sec-fetch-site"))
             if decision["action"] == "block" and decision["rule"] == "challenge":
                 status, extra, body = firewall.challenge_page(ip, method)
                 return status, body, extra

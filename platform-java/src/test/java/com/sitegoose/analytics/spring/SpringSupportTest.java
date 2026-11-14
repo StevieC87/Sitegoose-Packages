@@ -88,14 +88,19 @@ class SpringSupportTest {
     }
 
     @Test
-    void trustProxyIsIgnoredWhenSpringBootReadsTheProxyHeadersItself() {
+    void trustProxyIsIgnoredWhenTheServerReadsTheProxyHeadersItself() {
         assertEquals("203.0.113.5", ipFor(site(new HashMap<>())), "no strategy: trust-proxy as configured");
         Map<String, Object> nativeStrategy = new HashMap<>();
         nativeStrategy.put("server.forward-headers-strategy", "native");
         assertEquals("198.51.100.7", ipFor(site(nativeStrategy)));
         Map<String, Object> framework = new HashMap<>();
         framework.put("server.forward-headers-strategy", "FRAMEWORK");
-        assertEquals("198.51.100.7", ipFor(site(framework)));
+        // The filter reads from under Spring's ForwardedHeaderFilter, so trust-proxy
+        // counts from the right there; without one, one proxy.
+        assertEquals("203.0.113.5", ipFor(site(framework)));
+        Map<String, Object> frameworkAlone = site(framework);
+        frameworkAlone.remove("analytics.trust-proxy");
+        assertEquals("203.0.113.5", ipFor(frameworkAlone));
         Map<String, Object> kubernetes = new HashMap<>();
         kubernetes.put("spring.main.cloud-platform", "kubernetes");
         assertEquals("framework", PlatformAutoConfiguration.forwardStrategy(env(framework)).toLowerCase(java.util.Locale.ROOT));

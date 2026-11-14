@@ -17,14 +17,21 @@
 module SiteGoose
   module RequestRules
     MAX_RULES = 200
-    # How much of each part a rule may look at. Patterns come from our rules,
-    # but the text comes from whoever is asking: a bounded slice keeps a bad
-    # pattern from being a hung request (and Ruby 3.2+ also times it out).
+    # How much of a part one regex search may look at. Patterns come from our
+    # rules, but the text comes from whoever is asking: a bounded slice keeps
+    # a bad pattern from being a hung request (and Ruby 3.2+ also times it
+    # out). A longer part is searched in windows of MAX_TEXT, each starting
+    # WINDOW_STEP after the last, so a match up to 1,000 characters long is
+    # found wherever it sits. The plain matchers read the whole part: a part
+    # cut short would let filler carry an attack past them.
     MAX_TEXT = 2000
+    WINDOW_STEP = 1000
     MAX_REGEX = 200
     SECTIONS = %w[path query ua].freeze
     MATCHERS = %w[exact prefix suffix contains].freeze
     REGEX_TIMEOUT = 0.05
+    # What a method override may name (X-HTTP-Method-Override, _method).
+    METHOD_TOKEN = /\A[A-Z]{1,20}\z/.freeze
 
     module_function
 
@@ -253,12 +260,21 @@ module SiteGoose
       elsif safe_pattern?(pattern)
         begin
           out["regex"] = compile_regex(pattern)
+          # Anchored to the part's start or end: searched only in the window
+          # that has it, never at a window's edge in the middle of the part.
+          out["anchors"] = [pattern.start_with?("^"), ends_anchored?(pattern)]
         rescue RegexpError
           # A pattern we can't compile is dropped; the rule's other parts stay.
           nil
         end
       end
       out.empty? ? nil : out
+    end
+
+    # A "$" at the end that isn't escaped: "\$" is a dollar sign, "\\$" a
+    # backslash and then the end.
+    def ends_anchored?(pattern)
+      pattern.end_with?("$") && pattern[0...-1][/\\*\z/].size.even?
     end
 
     # The rules as they will be matched; [] when there are none.
@@ -333,60 +349,100 @@ module SiteGoose
 
     # A request target's path (no query string) as the router reads it:
     # what the probes, the static-file check and the rules' path match too.
+    # Resolved from the whole path, never a cut one: "/./././.../login" is
+    # "/login" to a router however many "./" it carries.
     def normalize_target(target)
-      text = SiteGoose.text(target).split(/[?#]/, 2)[0].to_s
-      router_path(text[0, MAX_TEXT])[0, MAX_TEXT]
+      router_path(SiteGoose.text(target).split(/[?#]/, 2)[0].to_s)
     end
 
-    def regex_hit?(regex, text)
-      regex.match?(text)
+    # Where a regex is searched in a part this long: the whole part when it
+    # fits in one window, else windows starting 0, 1000, 2000, ... until one
+    # reaches the end. first / last: the pattern is anchored to the part's
+    # start / end, so only the window holding it counts.
+    def window_starts(size, first, last)
+      return [0] if size <= MAX_TEXT
+      return [] if first && last
+
+      final = (size - MAX_TEXT + WINDOW_STEP - 1) / WINDOW_STEP * WINDOW_STEP
+      return [0] if first
+      return [final] if last
+
+      0.step(final, WINDOW_STEP)
+    end
+
+    # One timeout ends the search of the part: the next window would cost as much.
+    def regex_hit?(part, text)
+      regex = part["regex"]
+      first, last = part["anchors"]
+      window_starts(text.size, first, last).any? { |start| regex.match?(text[start, MAX_TEXT]) }
     rescue Regexp::TimeoutError
       false
     end
 
-    def hits?(part, raw, decoded, routed = nil)
-      texts = [raw, decoded, routed].compact.uniq
+    def hits?(part, texts)
       texts.any? do |text|
         next true if part["exact"]&.include?(text)
         next true if part["prefix"]&.any? { |entry| text.start_with?(entry) }
         next true if part["suffix"]&.any? { |entry| !entry.empty? && text.end_with?(entry) }
         next true if part["contains"]&.any? { |entry| !entry.empty? && text.include?(entry) }
 
-        part["regex"] ? regex_hit?(part["regex"], text) : false
+        part["regex"] ? regex_hit?(part, text) : false
       end
+    end
+
+    # The methods a rule's method list is compared with: the request's own;
+    # for a POST, the method it asks to be routed as (Rack::MethodOverride,
+    # which runs after us, turns a POST with X-HTTP-Method-Override: DELETE
+    # or _method=patch into that); and GET for HEAD, which runs GET routes.
+    def methods_of(method, overrides = nil)
+      given = method.to_s.upcase
+      methods = [given]
+      if given == "POST"
+        Array(overrides).each do |name|
+          name = SiteGoose.text(name).strip.upcase
+          methods << name if name.match?(METHOD_TOKEN)
+        end
+      end
+      methods << "GET" if methods.include?("HEAD")
+      methods.uniq
     end
 
     # The request's parts, prepared once for every rule and page limit:
     # method upper-cased, path raw/decoded/routed, query raw/decoded, ua.
-    # target is the request target as the server received it, query string and all.
-    def prepare(method = "", target = "", user_agent = "")
+    # target is the request target as the server received it, query string
+    # and all. overrides: the method names a POST asks to be routed as.
+    # also_path: the path the app routes on (Rack's SCRIPT_NAME + PATH_INFO)
+    # when the server read the target differently; a hit on either counts.
+    def prepare(method = "", target = "", user_agent = "", overrides: nil, also_path: nil)
       target = SiteGoose.text(target)
-      mark = target.index("?")
+      # The path ends at the first "?" or "#", the query at a "#": a router
+      # drops the fragment, so "/login#1" is the login.
+      mark = target.index(/[?#]/)
       path_part = mark ? target[0, mark] : target
-      query = mark ? target[(mark + 1)..] : ""
-      query = query[0, MAX_TEXT]
-      ua = SiteGoose.text(user_agent)[0, MAX_TEXT].downcase
+      query = mark && target[mark] == "?" ? target[(mark + 1)..].split("#", 2)[0].to_s : ""
+      paths = [path_part]
+      paths << SiteGoose.text(also_path) if also_path && !also_path.to_s.empty? && also_path != path_part
+      # Lower-cased after decoding: %55NION decodes to "UNION", which a
+      # lower-cased "union select" rule would otherwise never see.
+      queries = [query.downcase, decode_once(query).downcase]
       {
         method: method.to_s.upcase,
-        raw_path: normalize_path(path_part[0, MAX_TEXT]),
-        decoded_path: normalize_path(decode_once(path_part[0, MAX_TEXT])[0, MAX_TEXT]),
-        # And as the router reads it: "/x;y/../admin" is "/admin" there, so a
-        # rule on "/admin" catches it; a hit on any of the three counts.
-        routed_path: router_path(path_part[0, MAX_TEXT])[0, MAX_TEXT],
-        raw_query: query.downcase,
-        # Lower-cased after decoding: %55NION decodes to "UNION", which a
-        # lower-cased "union select" rule would otherwise never see.
-        decoded_query: decode_once(query)[0, MAX_TEXT].downcase,
-        ua: ua
+        methods: methods_of(method, overrides),
+        # Raw, decoded once and as the router reads it: "/x;y/../admin" is
+        # "/admin" there, so a rule on "/admin" catches it; a hit on any counts.
+        path_texts: paths.flat_map { |p| [normalize_path(p), normalize_path(decode_once(p)), router_path(p)] }.uniq,
+        routed_path: router_path(path_part),
+        query_texts: queries.uniq,
+        ua: SiteGoose.text(user_agent).downcase
       }
     end
 
     # True when every section the rule names matches the prepared request.
     def matches?(rule, req)
-      return false if !rule["methods"].empty? && !rule["methods"].include?(req[:method])
-      return false if rule["path"] && !hits?(rule["path"], req[:raw_path], req[:decoded_path], req[:routed_path])
-      return false if rule["query"] && !hits?(rule["query"], req[:raw_query], req[:decoded_query])
-      return false if rule["ua"] && !hits?(rule["ua"], req[:ua], req[:ua])
+      return false if !rule["methods"].empty? && (rule["methods"] & req[:methods]).empty?
+      return false if rule["path"] && !hits?(rule["path"], req[:path_texts])
+      return false if rule["query"] && !hits?(rule["query"], req[:query_texts])
+      return false if rule["ua"] && !hits?(rule["ua"], [req[:ua]])
 
       true
     end

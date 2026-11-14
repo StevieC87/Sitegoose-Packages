@@ -369,15 +369,18 @@ module SiteGoose
     # nil. headers: a hash with lowercase names. target: the request target
     # as sent, query string and all (SiteGoose.request_target). late: a hash
     # given :static when the request is a static file let through, for
-    # Firewall#count_static after the response.
-    def blocked(remote, headers, method, target, late = nil)
+    # Firewall#count_static after the response. overrides and also_path:
+    # Firewall#check's (SiteGoose.method_overrides, SiteGoose.routed_also).
+    def blocked(remote, headers, method, target, late = nil, overrides: nil, also_path: nil)
       fw = firewall
       return nil unless fw
 
       begin
         ip = fw.client_ip(remote, headers)
         decision = fw.check(ip, method, target, SiteGoose.header(headers, "user-agent"),
-                            SiteGoose.header(headers, "accept"), SiteGoose.header(headers, "cookie"))
+                            SiteGoose.header(headers, "accept"), SiteGoose.header(headers, "cookie"),
+                            fetch_site: SiteGoose.header(headers, "sec-fetch-site"),
+                            overrides: overrides, also_path: also_path)
         return fw.challenge_page(ip, method) if decision[:action] == "block" && decision[:rule] == "challenge"
 
         late[:static] = decision[:static] if late && decision[:static]
@@ -414,7 +417,9 @@ module SiteGoose
 
       ip = nil
       late = {}
-      refused = blocked(remote, headers, method, SiteGoose.request_target(env), late)
+      target = SiteGoose.request_target(env)
+      refused = blocked(remote, headers, method, target, late, overrides: SiteGoose.method_overrides(env, headers),
+                                                               also_path: SiteGoose.routed_also(env, target))
       if refused
         ip = firewall ? firewall.client_ip(remote, headers) : remote
         # A crawler the firewall turned away is still a crawler, and counted

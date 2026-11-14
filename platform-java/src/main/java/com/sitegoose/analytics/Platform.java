@@ -249,7 +249,7 @@ public final class Platform {
         try {
             ip = firewall.clientIp(remote, headers);
             decision = firewall.check(ip, method, target, Core.header(headers, "user-agent"), Core.header(headers, "accept"),
-                    Core.header(headers, "cookie"));
+                    Core.header(headers, "cookie"), Core.header(headers, "sec-fetch-site"));
             if (seen != null && seen.length > 0) {
                 seen[0] = decision;
             }
@@ -320,12 +320,24 @@ public final class Platform {
      * the response); else the "back soon" page (503).
      */
     public Reply maintenanceResponse(String remote, Map<String, String> headers, String path, String query) {
+        return maintenanceResponse(remote, headers, path, query, false);
+    }
+
+    /**
+     * As above; secure: the request came over HTTPS (request.isSecure()). A
+     * proxy's X-Forwarded-Proto: https counts too: a cookie marked Secure
+     * that needn't be costs nothing, one that should be and isn't gives the
+     * code away on the first plain-HTTP request.
+     */
+    public Reply maintenanceResponse(String remote, Map<String, String> headers, String path, String query, boolean secure) {
         Maintenance maintenance = module("maintenance");
         if (maintenance == null) {
             return null;
         }
         try {
-            return maintenance.decide(clientIp(remote, headers), path, query, Core.header(headers, "cookie"));
+            String[] protos = Core.header(headers, "x-forwarded-proto").split(",");
+            boolean https = secure || "https".equalsIgnoreCase(protos[protos.length - 1].trim());
+            return maintenance.decide(clientIp(remote, headers), path, query, Core.header(headers, "cookie"), https);
         } catch (RuntimeException error) {
             core.log("maintenance", "check failed, request passed: " + error);
             return null;
@@ -749,6 +761,12 @@ public final class Platform {
         return ServletRequests.header(request, Core.SESSION_HEADER);
     }
 
+    /** A request attribute: the visitor's address, as the filter worked it out. */
+    public static final String IP_ATTRIBUTE = "com.sitegoose.analytics.ip";
+    /** Tomcat's RemoteIpValve and RemoteIpFilter set this when they changed the remote address. */
+    static final String TOMCAT_FORWARDED = "org.apache.tomcat.request.forwarded";
+    private static final String[] FORWARDING = {"x-forwarded-for", "cf-connecting-ip", "forwarded", "x-real-ip"};
+
     /** The visitor's address for a servlet request (jakarta or javax), as trustProxy says. */
     public String requestIp(Object request) {
         if (request == null) {
@@ -758,7 +776,20 @@ public final class Platform {
         if (!ServletRequests.isRequest(request)) {
             return "";
         }
-        return clientIp(ServletRequests.remoteAddr(request), ServletRequests.headers(request));
+        Object found = ServletRequests.attribute(request, IP_ATTRIBUTE);
+        if (found instanceof String && !((String) found).isEmpty()) {
+            return (String) found;
+        }
+        Object sent = ServletRequests.beforeForwarding(request);
+        Map<String, String> headers = ServletRequests.headers(sent);
+        // As the filter does: once the container took the address from the proxy
+        // headers, what is left in them is the visitor's own writing.
+        if (ServletRequests.attribute(request, TOMCAT_FORWARDED) != null) {
+            for (String name : FORWARDING) {
+                headers.remove(name);
+            }
+        }
+        return clientIp(ServletRequests.remoteAddr(sent), headers);
     }
 
     /** A failed login on your site (bot protection), from this thread's request. */

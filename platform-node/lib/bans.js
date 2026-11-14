@@ -109,9 +109,8 @@ const FETCHES = new Set(["", "GET", "HEAD"]);
 // ".." segment, a ";", a "\", an encoded "/" or a "%xx" left after decoding
 // is a page, so "/static/../login", "/static%2F..%2Flogin", "/login;x.css"
 // and "/login%3Bx.css" all count (sdk/protocols/static-cases.json). A
-// browser asks for its files with none of those. Nor is a path past the
-// rules' 2,000 characters: cut there, "/search/xxx…x.css/more" would end in
-// .css and flood a catch-all route past the limits.
+// browser asks for its files with none of those. Nor is a path over 2,000
+// characters: no asset has a name that long.
 function isStatic(target, method = "") {
   if (!FETCHES.has(String(method ?? ""))) return false;
   const raw = String(target || "").split(/[?#]/)[0];
@@ -151,4 +150,15 @@ function routedToPage(pattern, contentType) {
   return !patterns.every((one) => typeof one === "string" && isStatic(one));
 }
 
-module.exports = { createLocalBans, compileProbes, isProbe, isStatic, servesFile, routedToPage, keyOf };
+// Sec-Fetch-Site says another site made the browser send the request (an
+// <img>, a no-cors fetch, a link): it comes from the visitor's own address,
+// so a probe, a request rule or the rate limit refuses it but bans no one
+// (firewall.md, "Checking a request").
+const FOREIGN = new Set(["cross-site", "same-site"]);
+const sentForAnotherSite = (fetchSite) => FOREIGN.has(String(fetchSite ?? "").trim().toLowerCase());
+// The rules a block report gets an address banned on the other servers for.
+const bansOnReport = (rule) => rule === "probe" || rule === "rate" || String(rule).startsWith("request:");
+
+module.exports = {
+  createLocalBans, compileProbes, isProbe, isStatic, servesFile, routedToPage, keyOf, sentForAnotherSite, bansOnReport,
+};

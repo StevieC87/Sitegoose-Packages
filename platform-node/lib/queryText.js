@@ -23,6 +23,19 @@ const PREFIX = /(^|[^A-Za-z0-9_])[EeNnXxBb]$/;
 const PLACEHOLDER = String.raw`(?:\?|\$\d+|:\w+|@\w+)`;
 const LIST = new RegExp(String.raw`\(\s*${PLACEHOLDER}(?:\s*,\s*${PLACEHOLDER})*\s*\)`, "g");
 const ROWS = /\(\?\)(?:\s*,\s*\(\?\))+/g;
+// Where "..." may hold a value rather than a name: SQLite takes a
+// double-quoted string as a literal when no column has that name (SQLCipher's
+// PRAGMA key = "x'2DD2…'"), Oracle writes a password as a quoted name, and an
+// unknown database may do either. There "..." is kept only when it reads as a
+// plain name, closed: "email", never "x'2D…'", "N3w P@ss" or an unclosed one.
+const VALUE_QUOTES = new Set(["sqlite", "oracle", "other"]);
+const NAME = /^"[A-Za-z_][A-Za-z0-9_$#]{0,127}"$/;
+// A password or key written as a name, on any database: Oracle's
+// ALTER USER u IDENTIFIED BY pw and SQLCipher's PRAGMA key = "passphrase".
+// What follows is "?" whether it was a word or a quoted name.
+const SECRET_NAME = String.raw`("(?:[^"]|"")*"?|\x60(?:[^\x60]|\x60\x60)*\x60?|[^\s;,()]+)`;
+const IDENTIFIED = new RegExp(String.raw`(\bIDENTIFIED BY )${SECRET_NAME}`, "gi");
+const PRAGMA_KEY = new RegExp(String.raw`(\bPRAGMA (?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:HEX)?(?:RE)?KEY ?[=(] ?)${SECRET_NAME}`, "gi");
 
 // The end of a quoted run starting at `start` (the opening quote): the index
 // after the closing quote, or the text's length. A doubled quote escapes,
@@ -67,13 +80,18 @@ function sqlShape(sql, db, backslashLiteral) {
       space();
     } else if (c === "'" || (c === '"' && mysql)) {
       // Only PostgreSQL's E'..' escapes with a backslash where it is literal.
-      const escapes = !literal || (postgres && /(^|[^A-Za-z0-9_])[Ee]$/.test(out));
-      if (PREFIX.test(out)) out = out.slice(0, -1);
+      // Both tests look at the last two characters only: run over the whole
+      // growing output for every quote, these end-anchored patterns made a
+      // statement of many short literals cost quadratic time.
+      const tail = out.slice(-2);
+      const escapes = !literal || (postgres && /(^|[^A-Za-z0-9_])[Ee]$/.test(tail));
+      if (PREFIX.test(tail)) out = out.slice(0, -1);
       i = quoteEnd(sql, i, c, escapes);
       out += "?";
     } else if (c === '"' || c === "`") {
       const end = quoteEnd(sql, i, c, !literal);
-      out += sql.slice(i, end);
+      const run = sql.slice(i, end);
+      out += c === '"' && VALUE_QUOTES.has(db) && !NAME.test(run) ? "?" : run;
       i = end;
     } else if (c === "$" && !WORD.test(prev) && DOLLAR_TAG.test(sql.slice(i, i + 64))) {
       const tag = DOLLAR_TAG.exec(sql.slice(i, i + 64))[0];
@@ -91,7 +109,7 @@ function sqlShape(sql, db, backslashLiteral) {
       i += 1;
     }
   }
-  return out.replace(LIST, "(?)").replace(ROWS, "(?)").trim();
+  return out.replace(IDENTIFIED, "$1?").replace(PRAGMA_KEY, "$1?").replace(LIST, "(?)").replace(ROWS, "(?)").trim();
 }
 
 // A Mongo filter or pipeline's shape: keys kept, every value "?", and an

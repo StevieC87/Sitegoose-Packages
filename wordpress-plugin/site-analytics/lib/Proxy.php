@@ -62,12 +62,19 @@ class Proxy
     private $prefix;
     private $dir;
     private $key;
+    private $publicOnly;
 
     // $dir: a writable folder for the copy of each tracker file. PHP keeps
     // nothing between requests, so without one every visitor costs us a fetch.
     // $key: the proxy key, for a caller that has it but not the secret (px.php).
-    public function __construct($endpoint, $secret, $dir = '', $prefix = '', $key = '')
+    // $publicOnly: the endpoint is called only while it is https on public
+    // addresses (publicTarget()), for an endpoint someone other than the
+    // server's owner may set (a WordPress network's sub-site administrator):
+    // what the proxy fetches it hands to visitors, so an internal address
+    // there would be read out from outside.
+    public function __construct($endpoint, $secret, $dir = '', $prefix = '', $key = '', $publicOnly = false)
     {
+        $this->publicOnly = (bool) $publicOnly;
         $this->endpoint = rtrim((string) $endpoint, '/');
         $this->dir = (string) $dir;
         $this->prefix = preg_replace('/[^A-Za-z0-9_-]/', '', $prefix !== '' ? (string) $prefix : self::prefixFor($secret));
@@ -176,7 +183,11 @@ class Proxy
         } elseif ($this->dir !== '' && is_dir($this->dir)) {
             $file = $this->dir . '/px-breaker.json';
             $tmp = $file . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
-            if (@file_put_contents($tmp, json_encode($state)) === false || !@rename($tmp, $file)) {
+            $written = @file_put_contents($tmp, json_encode($state)) !== false;
+            if ($written) {
+                @chmod($tmp, 0600);
+            }
+            if (!$written || !@rename($tmp, $file)) {
                 @unlink($tmp);
             }
         }
@@ -280,6 +291,7 @@ class Proxy
                     // half-written file is never served.
                     $tmp = $cache . '.' . getmypid() . '.' . bin2hex(random_bytes(4));
                     if (@file_put_contents($tmp, $body) !== false) {
+                        @chmod($tmp, 0600);
                         @rename($tmp, $cache);
                     } else {
                         @unlink($tmp);
@@ -367,16 +379,101 @@ class Proxy
         return in_array($kind, self::ANSWER_TYPES, true) && preg_match('/^[\x20-\x7e]*\z/', $value) ? $value : 'text/plain; charset=utf-8';
     }
 
+    // The endpoint of $url when it may be called from a server whose owner
+    // didn't choose it: https, no user or password, and a host whose every
+    // address is public (not private, loopback, link-local or reserved).
+    // array('host', 'port', 'ip'), the address to connect to, so a name that
+    // answers differently a moment later (DNS rebinding) changes nothing; null
+    // when it may not be called.
+    public static function publicTarget($url)
+    {
+        $parts = @parse_url((string) $url);
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host']) || strtolower($parts['scheme']) !== 'https'
+            || isset($parts['user']) || isset($parts['pass'])) {
+            return null;
+        }
+        $host = strtolower(trim($parts['host'], '[]'));
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            $ips = array($host);
+        } elseif (preg_match('/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.?\z/', $host)) {
+            $ips = @gethostbynamel($host) ?: array();
+            if (!$ips && function_exists('dns_get_record')) {
+                foreach (@dns_get_record($host, DNS_AAAA) ?: array() as $record) {
+                    if (isset($record['ipv6'])) {
+                        $ips[] = $record['ipv6'];
+                    }
+                }
+            }
+        } else {
+            return null;
+        }
+        if (!$ips) {
+            return null;
+        }
+        foreach ($ips as $ip) {
+            if (!self::publicIp($ip)) {
+                return null;
+            }
+        }
+        return array('host' => $host, 'port' => isset($parts['port']) ? (int) $parts['port'] : 443, 'ip' => $ips[0]);
+    }
+
+    // An IPv6 address that carries an IPv4 one (::ffff:127.0.0.1, ::127.0.0.1)
+    // is judged by that one: it is where the connection goes.
+    private static function publicIp($ip)
+    {
+        $bin = @inet_pton($ip);
+        if ($bin !== false && strlen($bin) === 16 && strncmp($bin, str_repeat("\0", 10), 10) === 0
+            && (substr($bin, 10, 2) === "\xff\xff" || substr($bin, 10, 2) === "\0\0")) {
+            $ip = inet_ntop(substr($bin, 12));
+        }
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    }
+
+        // cURL's options for a request to publicTarget() $target: that address
+    // only, https only, no redirect followed.
+    public static function curlPinned(array $target)
+    {
+        $ip = strpos($target['ip'], ':') !== false ? '[' . $target['ip'] . ']' : $target['ip'];
+        $options = array(CURLOPT_FOLLOWLOCATION => false);
+        if (defined('CURLOPT_PROTOCOLS')) {
+            $options[CURLOPT_PROTOCOLS] = CURLPROTO_HTTPS;
+        }
+        if ($ip !== $target['host'] && '[' . $target['host'] . ']' !== $ip) {
+            $options[CURLOPT_RESOLVE] = array($target['host'] . ':' . $target['port'] . ':' . $ip);
+        }
+        return $options;
+    }
+
+    // $url and stream context options for the same, without cURL: the
+    // address in the URL, the name in Host and for the certificate.
+    public static function streamPinned($url, array $target, array &$headers)
+    {
+        $ip = strpos($target['ip'], ':') !== false ? '[' . $target['ip'] . ']' : $target['ip'];
+        $rest = (string) preg_replace('~^https://[^/?#]*~i', '', (string) $url);
+        $headers[] = 'Host: ' . $target['host'] . ($target['port'] === 443 ? '' : ':' . $target['port']);
+        return array('https://' . $ip . ':' . $target['port'] . $rest, array('peer_name' => $target['host']));
+    }
+
     // Sends it upstream. cURL when it exists (nearly always), else streams,
-    // so a host without cURL still works.
+    // so a host without cURL still works. No redirect is followed: the
+    // collector never answers with one.
     private function send($method, $url, $body, array $headers)
     {
         $result = array('status' => 0, 'body' => '', 'headers' => array());
+        $target = null;
+        if ($this->publicOnly) {
+            $target = self::publicTarget($url);
+            if ($target === null) {
+                return $result;
+            }
+        }
         if (function_exists('curl_init')) {
             $ch = curl_init($url);
             curl_setopt_array($ch, array(
                 CURLOPT_CUSTOMREQUEST => $method,
                 CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => false,
                 CURLOPT_TIMEOUT => self::TIMEOUT,
                 CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT,
                 CURLOPT_HTTPHEADER => $headers,
@@ -388,6 +485,9 @@ class Proxy
                     return strlen($line);
                 },
             ));
+            if ($target !== null) {
+                curl_setopt_array($ch, self::curlPinned($target));
+            }
             if ($body !== null) {
                 curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
             }
@@ -397,13 +497,18 @@ class Proxy
             curl_close($ch);
             return $result;
         }
+        $ssl = array();
+        if ($target !== null) {
+            list($url, $ssl) = self::streamPinned($url, $target, $headers);
+        }
         $context = stream_context_create(array('http' => array(
             'method' => $method,
             'header' => implode("\r\n", $headers),
             'content' => $body === null ? '' : $body,
             'timeout' => self::TIMEOUT,
             'ignore_errors' => true,
-        )));
+            'follow_location' => 0,
+        ), 'ssl' => $ssl));
         $answer = @file_get_contents($url, false, $context);
         $result['body'] = $answer === false ? '' : $answer;
         // PHP 8.4 added http_get_last_response_headers(); 8.5 deprecated the

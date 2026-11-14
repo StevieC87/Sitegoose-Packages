@@ -36,7 +36,8 @@ internal sealed class RuleSection
 internal static class RequestRules
 {
     public const int MaxRules = 200;
-    // How much of each part a rule may look at.
+    // How much of a part a regex looks at at once (firewall.md, 'Request
+    // rules'): the plain matchers read the whole part.
     public const int MaxText = 2000;
     public const int MaxRegex = 200;
     // .NET can time a regex out, which none of the other clients' languages
@@ -346,13 +347,36 @@ internal static class RequestRules
     }
 
     /// <summary>A request target's path (no query string) as the router reads
-    /// it: what the probes, the static-file check and the rules' path also match.</summary>
+    /// it, from the whole path: what the probes and the browser check's skip
+    /// also match. Cut first, 1,000 "./" would leave only "/" of "/./…/login".</summary>
     internal static string NormalizeTarget(string? target)
     {
         var text = target ?? "";
         var cut = text.IndexOfAny(new[] { '?', '#' });
         if (cut >= 0) text = text.Substring(0, cut);
-        return J.Clip(RouterPath(J.Clip(text, MaxText)), MaxText);
+        return RouterPath(text);
+    }
+
+    /// <summary>A regex searched in windows of MaxText characters, each
+    /// starting MaxText / 2 after the last, to the end of the text, so a
+    /// match up to 1,000 characters long is found wherever it sits. A
+    /// pattern that begins with "^" is searched only in the window that
+    /// starts the text, one that ends with "$" only in the one that ends it.</summary>
+    private static bool Searched(RuleSection section, string text)
+    {
+        var pattern = section.Pattern!;
+        var source = pattern.ToString();
+        var first = source.StartsWith("^", StringComparison.Ordinal);
+        var escapes = 0;
+        for (var i = source.Length - 2; i >= 0 && source[i] == '\\'; i--) escapes++;
+        var last = source.EndsWith("$", StringComparison.Ordinal) && escapes % 2 == 0;
+        for (var start = 0; ; start += MaxText / 2)
+        {
+            var length = Math.Min(MaxText, text.Length - start);
+            var final = start + length >= text.Length;
+            if ((!first || start == 0) && (!last || final) && pattern.IsMatch(text.Substring(start, length))) return true;
+            if (final || first) return false;
+        }
     }
 
     private static bool Hits(RuleSection section, string raw, string decoded, string? routed = null)
@@ -388,7 +412,7 @@ internal static class RequestRules
             {
                 try
                 {
-                    if (section.Pattern.IsMatch(text)) return true;
+                    if (Searched(section, text)) return true;
                 }
                 catch (RegexMatchTimeoutException)
                 {
@@ -400,23 +424,27 @@ internal static class RequestRules
     }
 
     /// <summary>A request as the rules see it, prepared once: the raw, decoded
-    /// and routed path, the raw and decoded query, the user agent. The request
-    /// rules and the page limits both match against it.</summary>
+    /// and routed path, the raw and decoded query, the user agent, each whole.
+    /// The request rules and the page limits both match against it.</summary>
     internal sealed class Prepared
     {
         public Prepared(string? method, string? target, string? userAgent)
         {
             var t = target ?? "";
+            // A "#" ends the path and the query: every router drops it, so
+            // "/login#1" runs /login.
+            var hash = t.IndexOf('#');
+            if (hash >= 0) t = t.Substring(0, hash);
             var mark = t.IndexOf('?');
             var pathPart = mark == -1 ? t : t.Substring(0, mark);
-            RawPath = NormalizePath(J.Clip(pathPart, MaxText));
-            var query = J.Clip(mark == -1 ? "" : t.Substring(mark + 1), MaxText);
+            RawPath = NormalizePath(pathPart);
+            var query = mark == -1 ? "" : t.Substring(mark + 1);
             RawQuery = query.ToLowerInvariant();
-            Ua = J.Clip(userAgent ?? "", MaxText).ToLowerInvariant();
-            DecodedPath = NormalizePath(J.Clip(DecodeOnce(J.Clip(pathPart, MaxText)), MaxText));
-            RoutedPath = J.Clip(RouterPath(J.Clip(pathPart, MaxText)), MaxText);
+            Ua = (userAgent ?? "").ToLowerInvariant();
+            DecodedPath = NormalizePath(DecodeOnce(pathPart));
+            RoutedPath = RouterPath(pathPart);
             // Lower-cased after decoding: %55NION decodes to "UNION".
-            DecodedQuery = J.Clip(DecodeOnce(query), MaxText).ToLowerInvariant();
+            DecodedQuery = DecodeOnce(query).ToLowerInvariant();
             Method = (method ?? "").ToUpperInvariant();
         }
 

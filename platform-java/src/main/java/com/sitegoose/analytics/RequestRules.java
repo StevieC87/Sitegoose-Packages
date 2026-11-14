@@ -26,9 +26,11 @@ public final class RequestRules {
     }
 
     static final int MAX_RULES = 200;
-    // How much of each part a rule may look at: a bounded slice keeps a bad
-    // pattern from being a hung request.
+    // How much of a part a regex looks at at once: a regex can't be timed out,
+    // so a bounded window keeps a bad pattern from being a hung request. The
+    // plain matchers cost one pass and read the whole part.
     static final int MAX_TEXT = 2000;
+    static final int WINDOW_STEP = 1000;
     static final int MAX_REGEX = 200;
     static final String[] SECTIONS = {"path", "query", "ua"};
     private static final int FLAGS = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
@@ -44,7 +46,48 @@ public final class RequestRules {
         List<String> prefix = Collections.emptyList();
         List<String> suffix = Collections.emptyList();
         List<String> contains = Collections.emptyList();
-        Pattern regex;
+        Windowed regex;
+    }
+
+    /**
+     * A regex searched in windows of MAX_TEXT that start every WINDOW_STEP, to
+     * the end of the part, so a match up to WINDOW_STEP long is found wherever
+     * it sits. A window's edges aren't the part's: "^" is searched only in the
+     * window that starts the part, "$" only in the one that ends it.
+     */
+    static final class Windowed {
+        private static final Pattern TRAILING = Pattern.compile("\\\\*\\$\\z");
+        final Pattern regex;
+        private final boolean start;
+        private final boolean end;
+
+        Windowed(String pattern) {
+            regex = Pattern.compile(pattern, FLAGS);
+            start = pattern.startsWith("^");
+            // "\$" is a dollar sign; "\\$" is a backslash, then the end.
+            Matcher trailing = TRAILING.matcher(pattern);
+            end = trailing.find() && (trailing.group().length() - 1) % 2 == 0;
+        }
+
+        boolean find(String text) {
+            if (text.length() <= MAX_TEXT) {
+                return regex.matcher(text).find();
+            }
+            if (start && end) {
+                return false;
+            }
+            if (start) {
+                return regex.matcher(text.substring(0, MAX_TEXT)).find();
+            }
+            // The first start whose window reaches the end of the part.
+            int lastFrom = (text.length() - MAX_TEXT + WINDOW_STEP - 1) / WINDOW_STEP * WINDOW_STEP;
+            for (int from = end ? lastFrom : 0; from <= lastFrom; from += WINDOW_STEP) {
+                if (regex.matcher(text.substring(from, Math.min(text.length(), from + MAX_TEXT))).find()) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     /** A compiled rule. */
@@ -267,7 +310,7 @@ public final class RequestRules {
         Object pattern = regex ? data.get("regex") : null;
         if (pattern instanceof String && safePattern((String) pattern)) {
             try {
-                out.regex = Pattern.compile((String) pattern, FLAGS);
+                out.regex = new Windowed((String) pattern);
                 any = true;
             } catch (PatternSyntaxException error) {
                 // A pattern we can't compile is dropped; the rule's other parts stay.
@@ -354,10 +397,6 @@ public final class RequestRules {
         return SLASHES.matcher(path.toLowerCase(Locale.ROOT).replace('\\', '/')).replaceAll("/");
     }
 
-    private static String cap(String text) {
-        return text.length() > MAX_TEXT ? text.substring(0, MAX_TEXT) : text;
-    }
-
     /**
      * The path as a servlet container or router resolves it: ";..." dropped
      * from each segment (matrix parameters, ;jsessionid), "." and ".."
@@ -416,7 +455,7 @@ public final class RequestRules {
                     return true;
                 }
             }
-            if (section.regex != null && section.regex.matcher(text).find()) {
+            if (section.regex != null && section.regex.find(text)) {
                 return true;
             }
         }
@@ -426,7 +465,9 @@ public final class RequestRules {
     /**
      * A request as the rules see it, prepared once: the raw, decoded and
      * routed path, the raw and decoded query, the user agent. The request
-     * rules and the page limits both match against it.
+     * rules and the page limits both match against it. A "#" ends the path
+     * and the query: every router drops it, so "/login#1" runs /login, and
+     * kept it would miss every exact and suffix rule on /login.
      */
     static final class Prepared {
         final String method;
@@ -440,19 +481,51 @@ public final class RequestRules {
 
         Prepared(String method, String target, String userAgent) {
             String full = target == null ? "" : target;
+            int hash = full.indexOf('#');
+            if (hash >= 0) {
+                full = full.substring(0, hash);
+            }
             int mark = full.indexOf('?');
-            String pathPart = cap(mark == -1 ? full : full.substring(0, mark));
+            String pathPart = mark == -1 ? full : full.substring(0, mark);
             rawPath = normalizePath(pathPart);
-            String query = cap(mark == -1 ? "" : full.substring(mark + 1));
+            String query = mark == -1 ? "" : full.substring(mark + 1);
             rawQuery = query.toLowerCase(Locale.ROOT);
-            ua = cap(userAgent == null ? "" : userAgent).toLowerCase(Locale.ROOT);
-            decodedPath = normalizePath(cap(decodeOnce(pathPart)));
-            // What the app's router will see: a hit on any of the three counts.
+            ua = (userAgent == null ? "" : userAgent).toLowerCase(Locale.ROOT);
+            decodedPath = normalizePath(decodeOnce(pathPart));
+            // What the app's router will see, from the whole path: a hit on any of the three counts.
             routedPath = resolvePath(decodedPath);
             // Lower-cased after decoding: %55NION decodes to "UNION".
-            decodedQuery = cap(decodeOnce(query)).toLowerCase(Locale.ROOT);
+            decodedQuery = decodeOnce(query).toLowerCase(Locale.ROOT);
             this.method = method == null ? "" : method.toUpperCase(Locale.ROOT);
         }
+    }
+
+    private static final Pattern SCHEME = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+.-]*:");
+
+    /**
+     * The request target in origin form, as a server's own URL parser reads
+     * one that doesn't start with "/": the scheme dropped, then, after a "//",
+     * the authority; a "/" in front of what is left. "http://h/admin?x" is
+     * "/admin?x", and "x:/admin" is "/admin" to Puma, gunicorn and Go, so kept
+     * as it is it would miss every prefix rule. "*" stays "*".
+     */
+    static String originForm(String target) {
+        if (target == null || target.isEmpty() || target.charAt(0) == '/' || "*".equals(target)) {
+            return target;
+        }
+        String rest = target;
+        Matcher scheme = SCHEME.matcher(rest);
+        if (scheme.lookingAt()) {
+            rest = rest.substring(scheme.end());
+            if (rest.startsWith("//")) {
+                int end = 2;
+                while (end < rest.length() && "/?#".indexOf(rest.charAt(end)) < 0) {
+                    end++;
+                }
+                rest = rest.substring(end);
+            }
+        }
+        return rest.startsWith("/") ? rest : "/" + rest;
     }
 
     /** True when the request is one of the rule's methods and every section the rule names matches. */

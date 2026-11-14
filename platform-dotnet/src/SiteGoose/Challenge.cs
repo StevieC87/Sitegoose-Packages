@@ -121,7 +121,9 @@ internal static class Challenge
     }
 
     /// <summary>Conditions 1 to 3: a GET or HEAD, whose Accept asks for
-    /// text/html, for a path (lower-cased, no query string) under none of skip.</summary>
+    /// text/html, for a path (lower-cased, no query string) under none of skip.
+    /// Skipped only when the routed path is under one too: "/api/../admin"
+    /// starts with "/api/" as sent, but the router serves /admin.</summary>
     public static bool AsksForPage(string? method, string? target, string? accept, string[] skip)
     {
         var m = (method ?? "").ToUpperInvariant();
@@ -133,9 +135,16 @@ internal static class Challenge
         var h = path.IndexOf('#');
         if (h >= 0) path = path.Substring(0, h);
         path = path.ToLowerInvariant();
+        string? routed = null;
         foreach (var prefix in skip)
         {
-            if (path.StartsWith(prefix, StringComparison.Ordinal)) return false;
+            if (!path.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            routed ??= RequestRules.NormalizeTarget(target);
+            foreach (var again in skip)
+            {
+                if (routed.StartsWith(again, StringComparison.Ordinal)) return false;
+            }
+            return true;
         }
         return true;
     }

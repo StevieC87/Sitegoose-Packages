@@ -43,8 +43,10 @@ internal sealed class Maintenance
             "<body><main><h1>Back soon</h1><p>" + text + "</p></main></body></html>");
     }
 
-    /// <summary>Null to let the request through, else what to do.</summary>
-    public MaintenanceDecision? Decide(string ip, string path, string? query, string? cookieHeader)
+    /// <summary>Null to let the request through, else what to do. https: the
+    /// visitor is on HTTPS, so the cookie holding the code is Secure and never
+    /// sent over a plain-http request someone else made the browser send.</summary>
+    public MaintenanceDecision? Decide(string ip, string path, string? query, string? cookieHeader, bool https = false)
     {
         var m = core.IsOn("maintenance") ? core.Maintenance : null;
         if (m == null || !m.On || (Skip != null && Skip(path))) return null;
@@ -61,7 +63,7 @@ internal sealed class Maintenance
             var given = QueryHelpers.ParseQuery(query ?? "");
             if (given.TryGetValue(Cookie, out var values) && values.Count > 0 && values[0] == code)
             {
-                return new MaintenanceDecision { RememberCookie = Cookie + "=" + code + "; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax" };
+                return new MaintenanceDecision { RememberCookie = Cookie + "=" + code + "; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax" + (https ? "; Secure" : "") };
             }
             foreach (var value in Challenge.CookieValues(cookieHeader, Cookie))
             {

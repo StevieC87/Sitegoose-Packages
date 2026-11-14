@@ -13,10 +13,15 @@ import re
 from urllib.parse import unquote_plus
 
 MAX_RULES = 200
-# How much of each part a rule may look at. Patterns come from our rules, but
-# the text comes from whoever is asking, and `re` can't be timed out: a bounded
-# slice keeps a bad pattern from being a hung request.
+# How much of a part a regex looks at at once. Patterns come from our rules,
+# but the text comes from whoever is asking, and `re` can't be timed out: a
+# bounded window keeps a bad pattern from being a hung request. The plain
+# matchers cost one pass, so they read the whole part: cut, 2,000 characters
+# of filler would carry an attack past every rule.
 MAX_TEXT = 2000
+# Each further window starts this much later, so a match up to this long is
+# found wherever it sits.
+STEP = MAX_TEXT // 2
 MAX_REGEX = 200
 SECTIONS = ("path", "query", "ua")
 # The only kinds of group a pattern may open with "(?": non-capturing and lookahead.
@@ -178,10 +183,15 @@ def _section(section, regex=True):
     pattern = section.get("regex") if regex else None
     if safe_pattern(pattern):
         try:
-            out["regex"] = re.compile(pattern, re.IGNORECASE)
+            compiled = re.compile(pattern, re.IGNORECASE)
         except re.error:
             # A pattern we can't compile is dropped; the rule's other parts stay.
-            pass
+            compiled = None
+        if compiled is not None:
+            out["regex"] = compiled
+            # "$" ends the pattern unless it is escaped: an odd run of "\" before it.
+            dollar = pattern.endswith("$") and (len(pattern) - len(pattern[:-1].rstrip("\\")) - 1) % 2 == 0
+            out["anchors"] = (pattern.startswith("^"), dollar)
     return out or None
 
 
@@ -255,9 +265,32 @@ def _router_path(path):
 
 def normalize_target(target):
     """The path of a request target (no query string) as the router reads it:
-    what the probes, the static-file check and the rules' path also match."""
+    what the probes, the static-file check and the rules' path also match.
+    Resolved from the whole path: "/./././.../login" is "/login" to a router
+    however many "./" it carries."""
     text = str(target or "")
-    return _router_path(re.split(r"[?#]", text, 1)[0][:MAX_TEXT])[:MAX_TEXT]
+    return _router_path(re.split(r"[?#]", text, 1)[0])
+
+
+def _search(regex, anchors, text):
+    """A regex over the part in windows of MAX_TEXT, each STEP after the last,
+    until one reaches the end. A pattern that begins with "^" is tried only in
+    the window that starts the part, one that ends with "$" only in the one
+    that ends it: a window's edges are not the part's."""
+    if len(text) <= MAX_TEXT:
+        return regex.search(text) is not None
+    head, tail = anchors
+    if head and tail:
+        return False
+    if head:
+        return regex.search(text[:MAX_TEXT]) is not None
+    last = max(0, -(-(len(text) - MAX_TEXT) // STEP)) * STEP
+    if tail:
+        return regex.search(text[last:]) is not None
+    for start in range(0, last + 1, STEP):
+        if regex.search(text[start:start + MAX_TEXT]):
+            return True
+    return False
 
 
 def _hits(section, raw, decoded, routed=None):
@@ -275,7 +308,7 @@ def _hits(section, raw, decoded, routed=None):
         if any(entry and entry in text for entry in section.get("contains", ())):
             return True
         regex = section.get("regex")
-        if regex is not None and regex.search(text):
+        if regex is not None and _search(regex, section["anchors"], text):
             return True
     return False
 
@@ -284,23 +317,28 @@ def prepare(method="", path="", user_agent=""):
     """The request as every rule and page limit reads it, worked out once.
     `path` is the request target as the server received it, query string and
     all. The firewall prepares a request once and hands the result to both
-    match_request and match_limits, so the path is decoded and routed once."""
+    match_request and match_limits, so the path is decoded and routed once.
+    A "#" ends the path and the query: a raw client can send one, and every
+    router drops it, so "POST /login#1" runs the login."""
     target = str(path or "")
+    end = target.find("#")
+    if end != -1:
+        target = target[:end]
     mark = target.find("?")
-    bare = (target if mark == -1 else target[:mark])[:MAX_TEXT]
-    query = ("" if mark == -1 else target[mark + 1:])[:MAX_TEXT]
+    bare = target if mark == -1 else target[:mark]
+    query = "" if mark == -1 else target[mark + 1:]
     return {
         "method": str(method or "").upper(),
         "raw_path": _normalize_path(bare),
-        "decoded_path": _normalize_path(_decode_once(bare)[:MAX_TEXT]),
+        "decoded_path": _normalize_path(_decode_once(bare)),
         # And as the router reads it: "/x;y/../admin" is "/admin" there, so a
         # rule on "/admin" catches it; a hit on any of the three counts.
-        "routed_path": _router_path(bare)[:MAX_TEXT],
+        "routed_path": _router_path(bare),
         "raw_query": query.lower(),
         # Lower-cased after decoding: %55NION decodes to "UNION", which a
         # lower-cased "union select" rule would otherwise never see.
-        "decoded_query": _decode_once(query)[:MAX_TEXT].lower(),
-        "ua": str(user_agent or "")[:MAX_TEXT].lower(),
+        "decoded_query": _decode_once(query).lower(),
+        "ua": str(user_agent or "").lower(),
     }
 
 

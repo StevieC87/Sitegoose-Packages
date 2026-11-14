@@ -723,6 +723,21 @@ class Queries
     const PLACEHOLDER = '(?:\?|\$[0-9]+|:[A-Za-z0-9_]+|@[A-Za-z0-9_]+)';
     // Bytes the scan stops at; any other byte is copied as it is.
     const SPECIAL = "-#/'\"`\$0123456789.\t\n\x0B\f\r \xC2\xE1\xE2\xE3\xEF";
+    // Where "..." may hold a value rather than a name: SQLite takes a
+    // double-quoted string as a literal when no column has that name
+    // (SQLCipher's PRAGMA key = "x'2DD2…'"), Oracle writes a password as a
+    // quoted name, and an unknown database may do either. There "..." is kept
+    // only when it reads as a plain name, closed: "email", never "x'2D…'",
+    // "N3w P@ss" or an unclosed one.
+    const VALUE_QUOTES = array('sqlite', 'oracle', 'other');
+    const NAME = '/^"[A-Za-z_][A-Za-z0-9_$#]{0,127}"\z/';
+    // A password or key written as a name, on any database: Oracle's
+    // ALTER USER u IDENTIFIED BY pw and SQLCipher's PRAGMA key = "passphrase".
+    // What follows is "?" whether it was a word or a quoted name. The word
+    // stops at JavaScript's whitespace (WS), as queryText.js's \s does.
+    const SECRET_NAME = '("(?:[^"]++|"")*+"?|`(?:[^`]++|``)*+`?|(?:(?!' . self::WS . ')[^;,()])+)';
+    const IDENTIFIED = '/((?<![A-Za-z0-9_])IDENTIFIED BY )' . self::SECRET_NAME . '/i';
+    const PRAGMA_KEY = '/((?<![A-Za-z0-9_])PRAGMA (?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:HEX)?(?:RE)?KEY ?[=(] ?)' . self::SECRET_NAME . '/i';
 
     public static function databaseOf($db)
     {
@@ -912,7 +927,8 @@ class Queries
                 $out .= '?';
             } elseif ($c === '"' || $c === '`') {
                 $end = self::quoteEnd($sql, $i, $c, !$literal);
-                $out .= substr($sql, $i, $end - $i);
+                $run = substr($sql, $i, $end - $i);
+                $out .= $c === '"' && in_array($db, self::VALUE_QUOTES, true) && !preg_match(self::NAME, $run) ? '?' : $run;
                 $i = $end;
             } elseif ($c === '$' && !self::isWord($prev) && preg_match('/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/', substr($sql, $i, 64), $m)) {
                 $tag = $m[0];
@@ -931,6 +947,7 @@ class Queries
                 $i += 1;
             }
         }
+        $out = preg_replace(array(self::IDENTIFIED, self::PRAGMA_KEY), '${1}?', $out);
         // A list of only placeholders is one (?), and so are rows of them.
         $out = preg_replace('/\(' . self::WS . '*' . self::PLACEHOLDER . '(?:' . self::WS . '*,' . self::WS . '*' . self::PLACEHOLDER . ')*' . self::WS . '*\)/', '(?)', $out);
         $out = preg_replace('/\(\?\)(?:' . self::WS . '*,' . self::WS . '*\(\?\))+/', '(?)', $out);

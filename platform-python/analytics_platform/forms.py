@@ -8,7 +8,20 @@ is accepted (checked False).
 """
 import re
 
-PRIVATE_FIELD = re.compile(r"pass|card|cvc|cvv|secret|token|ssn|iban|csrf|analytics-shield", re.I)
+# Fields never sent, by name. check() is handed the whole form, so whoever
+# protects a sign-up or a checkout relies on this list: keep it wide, and the
+# same as platform-php's Forms.php, with "-" as well as "_" between words: the
+# browser's own autofill names are "cc-number", "cc-csc" and "cc-exp".
+# ("pass" also covers passwd and passport.)
+PRIVATE_FIELD = re.compile(
+    r"pass|pwd|card|cc[-_]?(num|no|number|csc|exp)|cvc|cvv|cvn|expiry|exp[-_]?(month|year|date)|secret|token"
+    r"|\bauth\b|authoriz|api[-_]?key|otp|mfa|2fa|\bpin\b|security[-_]?code|signature|private|ssn|sin\b|nino"
+    r"|tax[-_]?id|iban|bic|swift|routing|account[-_]?(no|num|number)|dob|birth|licen[cs]e|csrf|nonce"
+    r"|analytics-shield", re.I | re.A)
+# A card number in a field nobody thought to name "card" still must not be
+# sent, so values are checked too: 13-19 digits that pass Luhn are taken out
+# of the text and the rest of the message is kept, so spam is still judged.
+DIGITS = re.compile(r"\b(?:\d[ -]?){12,18}\d\b", re.A)
 MAX_FIELDS = 50
 ANSWER = "analytics-shield"
 
@@ -20,9 +33,27 @@ def plain_fields(fields):
             continue
         if isinstance(value, (list, tuple)):
             value = ", ".join(v for v in value if isinstance(v, str))
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = str(value)
         if isinstance(value, str):
-            out[str(label)[:100]] = value[:2000]
+            out[str(label)[:100]] = without_card_numbers(value[:2000])
     return out
+
+
+def _luhn(digits):
+    total = 0
+    for index, char in enumerate(reversed(digits)):
+        n = int(char)
+        if index % 2:
+            n = n * 2 - 9 if n > 4 else n * 2
+        total += n
+    return total % 10 == 0
+
+
+def without_card_numbers(text):
+    """Anything shaped like a card number, and passing Luhn, as [removed].
+    Luhn is what keeps order numbers and phone numbers readable."""
+    return DIGITS.sub(lambda m: "[removed]" if _luhn(re.sub(r"\D", "", m.group(0))) else m.group(0), str(text))
 
 
 class Forms:

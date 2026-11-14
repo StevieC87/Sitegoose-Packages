@@ -14,7 +14,17 @@ module SiteGoose
   # card numbers and tokens are never sent. Fails open: when the check can't
   # be made, the form is accepted (checked false).
   class Forms
-    PRIVATE_FIELD = /pass|card|cvc|cvv|secret|token|ssn|iban|csrf|analytics-shield/i.freeze
+    # Fields never sent, by name. Whoever adds the check to a sign-up or a
+    # checkout relies on this list: keep it wide. (pass also covers passwd
+    # and passport, cc[-_]? the browsers' autocomplete names cc-number,
+    # cc-csc and cc-exp.) The same list in every package; (?a) makes \b
+    # ASCII, as PHP's and Python's are.
+    PRIVATE_FIELD = /(?a)pass|pwd|card|cc[-_]?(num|no|number|csc|exp)|cvc|cvv|cvn|expiry|exp[-_]?(month|year|date)|secret|token|\bauth\b|authoriz|api[-_]?key|otp|mfa|2fa|\bpin\b|security[-_]?code|signature|private|ssn|sin\b|nino|tax[-_]?id|iban|bic|swift|routing|account[-_]?(no|num|number)|dob|birth|licen[cs]e|csrf|nonce|analytics-shield/i.freeze
+    # A card number in a field nobody thought to name "card" still must not
+    # be sent, so values are checked too: 13-19 digits that pass Luhn are
+    # taken out of the text and the rest of the message is kept, so spam is
+    # still judged.
+    DIGITS = /(?a)\b(?:\d[ -]?){12,18}\d\b/.freeze
     MAX_FIELDS = 50
     ANSWER = "analytics-shield"
 
@@ -39,9 +49,23 @@ module SiteGoose
         next if label.to_s.match?(PRIVATE_FIELD)
 
         value = value.select { |v| v.is_a?(String) }.join(", ") if value.is_a?(Array)
-        out[SiteGoose.text(label, 100)] = SiteGoose.text(value, 2000) if value.is_a?(String)
+        out[SiteGoose.text(label, 100)] = without_card_numbers(SiteGoose.text(value, 2000)) if value.is_a?(String)
       end
       out
+    end
+
+    # Anything shaped like a card number, and passing Luhn, as [removed].
+    # Luhn is what keeps order numbers and phone numbers readable.
+    def self.without_card_numbers(text)
+      text.gsub(DIGITS) do |match|
+        sum = 0
+        match.delete("^0-9").reverse.each_char.with_index do |digit, i|
+          n = digit.to_i
+          n *= 2 if i.odd?
+          sum += n > 9 ? n - 9 : n
+        end
+        (sum % 10).zero? ? "[removed]" : match
+      end
     end
 
     def initialize(core, **_)

@@ -482,13 +482,7 @@ internal sealed class Core
         string target;
         if (!string.IsNullOrEmpty(raw))
         {
-            target = raw!;
-            // An absolute-form target (a request through a forward proxy): the path is what counts.
-            if (target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || target.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            {
-                var slash = target.IndexOf('/', target.IndexOf("//", StringComparison.Ordinal) + 2);
-                target = slash < 0 ? "/" : target.Substring(slash);
-            }
+            target = OriginForm(raw!);
         }
         else
         {
@@ -500,6 +494,26 @@ internal sealed class Core
             if (q.Length > 0 && !target.Contains('?')) target += "?" + q;
         }
         return target;
+    }
+
+    private static readonly Regex Scheme = new("^[a-zA-Z][a-zA-Z0-9+.-]*:", RegexOptions.CultureInvariant);
+
+    /// <summary>A request line's target in origin form, as a server's URL
+    /// parser reads it (firewall.md, 'Matching'): an absolute-form target
+    /// (a request through a forward proxy, or anything else a server takes)
+    /// loses its scheme and, after a "//", its authority, so "http://h/admin"
+    /// and "x:/admin" are both "/admin". "*" (OPTIONS *) stays as it is.</summary>
+    internal static string OriginForm(string target)
+    {
+        if (target.Length == 0 || target[0] == '/' || target == "*") return target;
+        var scheme = Scheme.Match(target);
+        var rest = scheme.Success ? target.Substring(scheme.Length) : target;
+        if (rest.StartsWith("//", StringComparison.Ordinal))
+        {
+            var end = rest.IndexOfAny(new[] { '/', '?', '#' }, 2);
+            rest = end < 0 ? "" : rest.Substring(end);
+        }
+        return rest.StartsWith("/", StringComparison.Ordinal) ? rest : "/" + rest;
     }
 
     // The characters a path may carry unencoded (RFC 3986), which Python's quote() leaves alone.

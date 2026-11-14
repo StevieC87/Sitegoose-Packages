@@ -6,6 +6,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -18,8 +19,24 @@ import java.util.regex.Pattern;
  * accepted (checked false).
  */
 final class Forms {
-    static final Pattern PRIVATE_FIELD = Pattern.compile("pass|card|cvc|cvv|secret|token|ssn|iban|csrf|analytics-shield",
-            Pattern.CASE_INSENSITIVE);
+    /**
+     * Fields never sent, by name. Whoever protects a sign-up or checkout form
+     * relies on this list, so it is wide: passwords, cards (the browser's own
+     * autofill names are "cc-number", "cc-csc" and "cc-exp"), one-time codes,
+     * keys, identity numbers, bank details. ("pass" also covers passwd and
+     * passport.) The same list as the PHP and Python packages.
+     */
+    static final Pattern PRIVATE_FIELD = Pattern.compile(
+            "pass|pwd|card|cc[-_]?(num|no|number|csc|exp)|cvc|cvv|cvn|expiry|exp[-_]?(month|year|date)|secret|token"
+                    + "|\\bauth\\b|authoriz|api[-_]?key|otp|mfa|2fa|\\bpin\\b|security[-_]?code|signature|private|ssn|sin\\b|nino"
+                    + "|tax[-_]?id|iban|bic|swift|routing|account[-_]?(no|num|number)|dob|birth|licen[cs]e|csrf|nonce"
+                    + "|analytics-shield", Pattern.CASE_INSENSITIVE);
+    /**
+     * A card number in a field nobody thought to name "card" still must not be
+     * sent, so values are checked too: 13-19 digits that pass Luhn are taken
+     * out of the text and the rest of the message is kept, so spam is still judged.
+     */
+    static final Pattern DIGITS = Pattern.compile("\\b(?:\\d[ -]?){12,18}\\d\\b");
     static final int MAX_FIELDS = 50;
     static final String ANSWER = "analytics-shield";
 
@@ -42,16 +59,38 @@ final class Forms {
             }
             String value = text(entry.getValue());
             if (value != null) {
-                out.put(label.length() > 100 ? label.substring(0, 100) : label, value.length() > 2000 ? value.substring(0, 2000) : value);
+                out.put(label.length() > 100 ? label.substring(0, 100) : label,
+                        withoutCardNumbers(value.length() > 2000 ? value.substring(0, 2000) : value));
             }
         }
         return out;
+    }
+
+    private static boolean luhn(String digits) {
+        int total = 0;
+        for (int i = 0; i < digits.length(); i++) {
+            int n = digits.charAt(digits.length() - 1 - i) - '0';
+            if (i % 2 == 1) {
+                n = n > 4 ? n * 2 - 9 : n * 2;
+            }
+            total += n;
+        }
+        return total % 10 == 0;
+    }
+
+    /** Anything shaped like a card number, and passing Luhn, as [removed]. Luhn is what keeps order numbers and phone numbers readable. */
+    static String withoutCardNumbers(String text) {
+        return DIGITS.matcher(text).replaceAll(found -> Matcher.quoteReplacement(
+                luhn(found.group().replaceAll("\\D", "")) ? "[removed]" : found.group()));
     }
 
     /** A field's text: a string, or the strings of a list or array joined with ", "; null otherwise. */
     private static String text(Object value) {
         if (value instanceof String) {
             return (String) value;
+        }
+        if (value instanceof Number) {
+            return String.valueOf(value);
         }
         Collection<?> items = value instanceof String[] ? java.util.Arrays.asList((String[]) value)
                 : value instanceof Collection ? (Collection<?>) value : null;

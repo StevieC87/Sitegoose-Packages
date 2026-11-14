@@ -14,8 +14,9 @@ class Forms
 {
     // Fields never sent, by name. ProtectForm hands over the whole request, so
     // whoever adds it to a sign-up or a checkout route relies on this list:
-    // keep it wide. (`pass` also covers passwd and passport.)
-    const PRIVATE_FIELD = '/pass|pwd|card|cc_?(num|no|number)|cvc|cvv|cvn|expiry|exp_?(month|year|date)|secret|token|\bauth\b|authoriz|api_?key|otp|mfa|2fa|\bpin\b|security_?code|signature|private|ssn|sin\b|nino|tax_?id|iban|bic|swift|routing|account_?(no|num|number)|dob|birth|licen[cs]e|csrf|nonce|analytics-shield/i';
+    // keep it wide. (`pass` also covers passwd and passport.) "-" as well as
+    // "_": the browser's autofill names are cc-number, cc-csc and cc-exp.
+    const PRIVATE_FIELD = '/pass|pwd|card|cc[-_]?(num|no|number|csc|exp)|cvc|cvv|cvn|expiry|exp[-_]?(month|year|date)|secret|token|\bauth\b|authoriz|api[-_]?key|otp|mfa|2fa|\bpin\b|security[-_]?code|signature|private|ssn|sin\b|nino|tax[-_]?id|iban|bic|swift|routing|account[-_]?(no|num|number)|dob|birth|licen[cs]e|csrf|nonce|analytics-shield/i';
     // A card number in a field nobody thought to name "card" still must not be
     // sent, so values are checked too: 13-19 digits that pass Luhn are taken out
     // of the text and the rest of the message is kept, so spam is still judged.

@@ -89,6 +89,20 @@ _NAME = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345678
 _PLACEHOLDER = r"(?:\?|\$[0-9]+|:[A-Za-z0-9_]+|@[A-Za-z0-9_]+)"
 _LIST = re.compile(r"\(%s*%s(?:%s*,%s*%s)*%s*\)" % (_S, _PLACEHOLDER, _S, _S, _PLACEHOLDER, _S))
 _ROWS = re.compile(r"\(\?\)(?:%s*,%s*\(\?\))+" % (_S, _S))
+# Where "..." may hold a value rather than a name: SQLite takes a
+# double-quoted string as a literal when no column has that name (SQLCipher's
+# PRAGMA key = "x'2DD2..'"), Oracle writes a password as a quoted name, and an
+# unknown database may do either. There "..." is kept only when it reads as a
+# plain name, closed: "email", never "x'2D..'", "N3w P@ss" or an unclosed one.
+_VALUE_QUOTES = frozenset(("sqlite", "oracle", "other"))
+_QUOTED_NAME = re.compile(r'"[A-Za-z_][A-Za-z0-9_$#]{0,127}"')
+# A password or key written as a name, on any database: Oracle's
+# ALTER USER u IDENTIFIED BY pw and SQLCipher's PRAGMA key = "passphrase".
+# What follows is "?" whether it was a word or a quoted name. ASCII flags, as
+# JavaScript's \b and case-insensitive matching are.
+_SECRET_NAME = r'("(?:[^"]|"")*"?|`(?:[^`]|``)*`?|[^%s;,()]+)' % re.escape(_SPACE)
+_IDENTIFIED = re.compile(r"(\bIDENTIFIED BY )" + _SECRET_NAME, re.I | re.A)
+_PRAGMA_KEY = re.compile(r"(\bPRAGMA (?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:HEX)?(?:RE)?KEY ?[=(] ?)" + _SECRET_NAME, re.I | re.A)
 _MONGO = re.compile(r"([^%s]+)(?: ([^%s]+))?(?: (.*))?\Z" % (re.escape(_SPACE), re.escape(_SPACE)), re.S)
 _INDEX_KEY = re.compile(r"(?:0|[1-9][0-9]*)\Z")
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
@@ -178,8 +192,11 @@ def _sql_shape(sql, db, backslash_literal=None):
             last = "?"
         elif c == '"' or c == "`":
             end = _quote_end(sql, i, c, not literal)
-            out.append(sql[i:end])
-            last = sql[end - 1]
+            run = sql[i:end]
+            if c == '"' and db in _VALUE_QUOTES and not _QUOTED_NAME.fullmatch(run):
+                run = "?"
+            out.append(run)
+            last = run[-1]
             i = end
         elif c == "$" and prev not in _WORD and _DOLLAR_TAG.match(sql[i:i + 64]):
             tag = _DOLLAR_TAG.match(sql[i:i + 64]).group(0)
@@ -207,7 +224,7 @@ def _sql_shape(sql, db, backslash_literal=None):
             out.append(c)
             last = c
             i += 1
-    text = "".join(out)
+    text = _PRAGMA_KEY.sub(r"\g<1>?", _IDENTIFIED.sub(r"\g<1>?", "".join(out)))
     return _ROWS.sub("(?)", _LIST.sub("(?)", text)).strip(_SPACE)
 
 

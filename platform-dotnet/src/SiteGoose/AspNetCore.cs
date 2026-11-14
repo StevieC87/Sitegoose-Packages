@@ -243,7 +243,7 @@ internal sealed class PlatformMiddleware
             }
         }
 
-        var closed = platform.MaintenanceResponse(remote, header, request.Path.Value ?? "/", request.QueryString.Value);
+        var closed = platform.MaintenanceResponse(remote, header, request.Path.Value ?? "/", request.QueryString.Value, request.IsHttps);
         if (closed?.Page != null)
         {
             await WriteAsync(context, closed.Page).ConfigureAwait(false);

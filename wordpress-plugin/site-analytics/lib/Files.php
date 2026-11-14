@@ -132,7 +132,11 @@ class Files
         // name a file that isn't there).
         $file = $this->core->dir() . '/files.json';
         $tmp = $file . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
-        if (@file_put_contents($tmp, 'ps:' . serialize($this->state), LOCK_EX) === false || !@rename($tmp, $file)) {
+        $written = @file_put_contents($tmp, 'ps:' . serialize($this->state), LOCK_EX) !== false;
+        if ($written) {
+            @chmod($tmp, 0600);
+        }
+        if (!$written || !@rename($tmp, $file)) {
             @unlink($tmp);
         }
     }

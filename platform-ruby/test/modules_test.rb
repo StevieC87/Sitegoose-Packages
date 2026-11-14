@@ -146,6 +146,28 @@ class FormsTest < Minitest::Test
     assert_equal({ "user[email]" => "a@b.c", "tags" => "a, b", "note" => "hi" }, fields)
   end
 
+  # platform-php's FormsTest list and the autocomplete names: a sign-up or checkout form
+  # handed over whole must not send any of these.
+  def test_the_wide_list_of_private_fields
+    drop = %w[password pwd passwd user_pass card cc_number cc-number cc-csc cc-exp api-key cvc cvv expiry exp_month api_key apikey auth authorization
+              access_token client_secret otp mfa_code pin security_code ssn tax_id iban swift routing account_number
+              dob birthday licence signature private_notes _csrf _wpnonce analytics-shield]
+    keep = %w[name email message author subject phone order_number]
+    sent = SiteGoose::Forms.plain_fields((drop + keep).to_h { |name| [name, "x"] })
+    assert_equal keep, sent.keys
+    assert_equal ["user[name]"], SiteGoose::Forms.plain_fields({ "user" => { "name" => "x", "pin" => "1" } }).keys
+  end
+
+  def test_a_card_number_is_taken_out_of_any_field
+    sent = SiteGoose::Forms.plain_fields({ "field_12" => "my card is 4111 1111 1111 1111 thanks",
+                                           "phone" => "+44 20 7946 0958", "order" => "100000123" })
+    assert_equal "my card is [removed] thanks", sent["field_12"]
+    assert_equal "+44 20 7946 0958", sent["phone"]
+    assert_equal "100000123", sent["order"]
+    assert_equal "ref 1234567890123", SiteGoose::Forms.without_card_numbers("ref 1234567890123")
+    assert_equal "[removed]", SiteGoose::Forms.without_card_numbers("4111-1111-1111-1111")
+  end
+
   def test_the_check_and_failing_open
     core = FakeCore.new(answers: [SiteGoose::Response.new(200, {}, '{"success":false,"reasons":["disposable"]}'), 503])
     forms = SiteGoose::Forms.new(core)

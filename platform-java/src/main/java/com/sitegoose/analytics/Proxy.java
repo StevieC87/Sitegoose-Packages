@@ -3,6 +3,7 @@ package com.sitegoose.analytics;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Arrays;
@@ -66,8 +67,21 @@ public final class Proxy {
     private final boolean enabled;
     final String prefix;
     final String key;
-    // One copy of each tracker file, so a repeat visitor costs no upstream request.
+    // One copy of each tracker file the collector serves, so a repeat visitor costs no upstream request.
     private final Map<String, Object[]> files = new ConcurrentHashMap<>();
+    /**
+     * When each version that failed was last asked for. Anyone can ask for
+     * v&lt;any digits&gt;, so this keeps only the latest MAX_FAILED, as the other
+     * packages do: kept forever, it would grow until the heap ran out.
+     */
+    static final int MAX_FAILED = 200;
+    static final double FILE_RETRY_S = 60;
+    private final Map<String, Double> failed = new java.util.LinkedHashMap<String, Double>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Double> eldest) {
+            return size() > MAX_FAILED;
+        }
+    };
     /**
      * A visitor's beacon waits on this, so the collector gets 2 seconds, not
      * the 5 the background sends get; and after FAILS_TO_OPEN failures in a
@@ -203,35 +217,35 @@ public final class Proxy {
         Object[] held = files.get(rest);
         double now = System.currentTimeMillis() / 1000.0;
         byte[] body = null;
-        if (held != null && held[0] != null && (Double) held[1] > now - (pinned ? TTL_PINNED_S : TTL_MAJOR_S)) {
+        if (held != null && (Double) held[1] > now - (pinned ? TTL_PINNED_S : TTL_MAJOR_S)) {
             body = (byte[]) held[0];
         }
-        // A fetch that failed lately isn't tried again for a minute (held[2]).
-        boolean recentlyFailed = held != null && held.length > 2 && (Double) held[2] > now - 60;
-        if (body == null && !breakerOpen() && !recentlyFailed) {
+        if (body == null && !breakerOpen() && !recentlyFailed(rest, now)) {
             try {
                 HttpRequest request = HttpRequest.newBuilder(URI.create(core.endpoint + "/" + rest)).timeout(UPSTREAM_TIMEOUT).GET().build();
                 HttpResponse<InputStream> answer = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
                 byte[] fetched = readCapped(answer.body());
+                if (answer.statusCode() >= 500) {
+                    failedUpstream();
+                } else {
+                    succeeded();
+                }
                 if (answer.statusCode() == 200 && fetched.length > 500) {
                     body = fetched;
                     files.put(rest, new Object[] {body, now});
-                    succeeded();
+                    forgetFailure(rest);
                 } else {
-                    files.put(rest, new Object[] {held == null ? null : held[0], held == null ? 0.0 : held[1], now});
-                    if (answer.statusCode() >= 500) {
-                        failedUpstream();
-                    }
+                    rememberFailure(rest, now);
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             } catch (IOException | RuntimeException error) {
                 core.log("proxy", "could not fetch " + rest + ": " + error);
-                files.put(rest, new Object[] {held == null ? null : held[0], held == null ? 0.0 : held[1], now});
+                rememberFailure(rest, now);
                 failedUpstream();
             }
             // Upstream is unreachable: an old copy beats no tracker at all.
-            if (body == null && held != null && held[0] != null) {
+            if (body == null && held != null) {
                 body = (byte[]) held[0];
             }
         }
@@ -243,6 +257,34 @@ public final class Proxy {
                 .header("Cache-Control", pinned ? "public, max-age=31536000, immutable" : "public, max-age=3600")
                 .header("X-Content-Type-Options", "nosniff")
                 .body(body);
+    }
+
+    // A fetch that failed lately isn't tried again for a minute.
+    private boolean recentlyFailed(String rest, double now) {
+        synchronized (failed) {
+            Double at = failed.get(rest);
+            return at != null && at > now - FILE_RETRY_S;
+        }
+    }
+
+    private void rememberFailure(String rest, double now) {
+        synchronized (failed) {
+            failed.remove(rest);
+            failed.put(rest, now);
+        }
+    }
+
+    private void forgetFailure(String rest) {
+        synchronized (failed) {
+            failed.remove(rest);
+        }
+    }
+
+    /** How many failed versions are remembered (tests). */
+    int failing() {
+        synchronized (failed) {
+            return failed.size();
+        }
     }
 
     private static String title(String name) {
@@ -270,12 +312,13 @@ public final class Proxy {
         if (body != null && body.length > MAX_BODY) {
             return new Reply(413);
         }
-        if (breakerOpen()) {
-            return new Reply(502);
-        }
+        // The request is built before the breaker is asked: a query the URI parser
+        // refuses (a "%zz" anyone can send) is the visitor's mistake, not the
+        // collector's, and must not count against it.
+        HttpRequest upstream;
         try {
             String url = core.endpoint + "/collectanalytics/" + rest + (query == null || query.isEmpty() ? "" : "?" + query);
-            HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url)).timeout(UPSTREAM_TIMEOUT);
+            HttpRequest.Builder request = HttpRequest.newBuilder(new URI(url)).timeout(UPSTREAM_TIMEOUT);
             // The visitor's address: the collector needs it for the country, the
             // daily visitor ID and the per-visitor rate limit.
             request.header("X-Forwarded-For", clientIp == null ? "" : clientIp);
@@ -293,7 +336,15 @@ public final class Proxy {
             } else {
                 request.GET();
             }
-            HttpResponse<InputStream> answer = http.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
+            upstream = request.build();
+        } catch (URISyntaxException | IllegalArgumentException bad) {
+            return new Reply(400);
+        }
+        if (breakerOpen()) {
+            return new Reply(502);
+        }
+        try {
+            HttpResponse<InputStream> answer = http.send(upstream, HttpResponse.BodyHandlers.ofInputStream());
             if (answer.statusCode() >= 500) {
                 failedUpstream();
             } else {
@@ -309,10 +360,13 @@ public final class Proxy {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             return new Reply(502);
-        } catch (IOException | RuntimeException error) {
+        } catch (IOException error) {
             // The tracker already treats a failed beacon as lost and carries on.
             core.log("proxy", "could not reach the collector: " + error);
             failedUpstream();
+            return new Reply(502);
+        } catch (RuntimeException error) {
+            core.log("proxy", "could not ask the collector: " + error);
             return new Reply(502);
         }
     }

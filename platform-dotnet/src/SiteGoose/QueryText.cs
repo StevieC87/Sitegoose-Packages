@@ -33,7 +33,35 @@ internal static class QueryText
     private static readonly Regex DollarTag = new(@"^\$([A-Za-z_][A-Za-z0-9_]*)?\$", RegexOptions.CultureInvariant);
     private static readonly Regex List = new(@"\([" + Space + "]*" + Placeholder + "(?:[" + Space + "]*,[" + Space + "]*" + Placeholder + ")*[" + Space + @"]*\)", RegexOptions.CultureInvariant);
     private static readonly Regex Rows = new(@"\(\?\)(?:[" + Space + "]*,[" + Space + @"]*\(\?\))+", RegexOptions.CultureInvariant);
+    // Where "..." may hold a value rather than a name: SQLite takes a
+    // double-quoted string as a literal when no column has that name (SQLCipher's
+    // PRAGMA key = "x'2DD2…'"), Oracle writes a password as a quoted name, and an
+    // unknown database may do either. There "..." is kept only when it reads as a
+    // plain name, closed: "email", never "x'2D…'", "N3w P@ss" or an unclosed one.
+    private static readonly HashSet<string> ValueQuotes = new(StringComparer.Ordinal) { "sqlite", "oracle", "other" };
+    private static readonly Regex Name = new(@"^""[A-Za-z_][A-Za-z0-9_$#]{0,127}""\z", RegexOptions.CultureInvariant);
+    // A password or key written as a name, on any database: Oracle's
+    // ALTER USER u IDENTIFIED BY pw and SQLCipher's PRAGMA key = "passphrase".
+    // What follows is "?" whether it was a word or a quoted name. JavaScript's
+    // \b and /i are ASCII; .NET's IgnoreCase would also take the Kelvin sign
+    // for a k, so each letter is spelt out in both cases.
+    private const string SecretName = @"(""(?:[^""]|"""")*""?|`(?:[^`]|``)*`?|[^" + Space + @";,()]+)";
+    private const string WordStart = "(?<![A-Za-z0-9_])";
+    private static readonly Regex Identified = new("(" + WordStart + AnyCase("IDENTIFIED BY ") + ")" + SecretName, RegexOptions.CultureInvariant);
+    private static readonly Regex PragmaKey = new("(" + WordStart + AnyCase("PRAGMA ") + "(?:[A-Za-z_][A-Za-z0-9_]*\\.)?(?:" + AnyCase("HEX") + ")?(?:" + AnyCase("RE") + ")?"
+        + AnyCase("KEY") + " ?[=(] ?)" + SecretName, RegexOptions.CultureInvariant);
     private static readonly Regex Mongo = new(@"^([^" + Space + "]+)(?: ([^" + Space + @"]+))?(?: ([\s\S]*))?\z", RegexOptions.CultureInvariant);
+
+    private static string AnyCase(string word)
+    {
+        var pattern = new StringBuilder(word.Length * 4);
+        foreach (var c in word)
+        {
+            if (c >= 'A' && c <= 'Z') pattern.Append('[').Append(c).Append((char)(c + 32)).Append(']');
+            else pattern.Append(c);
+        }
+        return pattern.ToString();
+    }
 
     internal static bool IsSpace(char c) => c switch
     {
@@ -339,7 +367,8 @@ internal static class QueryText
             else if (c == '"' || c == '`')
             {
                 var end = QuoteEnd(sql, i, c, !literal);
-                output.Append(sql, i, end - i);
+                if (c == '"' && ValueQuotes.Contains(db) && !Name.IsMatch(sql.Substring(i, end - i))) output.Append('?');
+                else output.Append(sql, i, end - i);
                 i = end;
             }
             else if (c == '$' && !afterWord && DollarTag.Match(sql.Substring(i, Math.Min(64, sql.Length - i))) is { Success: true } tag)
@@ -364,7 +393,8 @@ internal static class QueryText
                 i += 1;
             }
         }
-        return Trim(Rows.Replace(List.Replace(output.ToString(), "(?)"), "(?)"));
+        var shaped = PragmaKey.Replace(Identified.Replace(output.ToString(), "$1?"), "$1?");
+        return Trim(Rows.Replace(List.Replace(shaped, "(?)"), "(?)"));
     }
 
     // ---- MongoDB ----

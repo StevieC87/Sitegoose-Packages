@@ -41,6 +41,26 @@ final class QueryText {
     private static final Pattern LIST = Pattern.compile(
             "\\(" + SPACE + "*" + PLACEHOLDER + "(?:" + SPACE + "*," + SPACE + "*" + PLACEHOLDER + ")*" + SPACE + "*\\)");
     private static final Pattern ROWS = Pattern.compile("\\(\\?\\)(?:" + SPACE + "*," + SPACE + "*\\(\\?\\))+");
+    /**
+     * Where "..." may hold a value rather than a name: SQLite takes a
+     * double-quoted string as a literal when no column has that name
+     * (SQLCipher's PRAGMA key = "x'2DD2…'"), Oracle writes a password as a
+     * quoted name, and an unknown database may do either. There "..." is kept
+     * only when it reads as a plain name, closed: "email", never "x'2D…'",
+     * "N3w P@ss" or an unclosed one.
+     */
+    private static final Set<String> VALUE_QUOTES = new HashSet<>(Arrays.asList("sqlite", "oracle", "other"));
+    private static final Pattern NAME = Pattern.compile("\"[A-Za-z_][A-Za-z0-9_$#]{0,127}\"");
+    // A password or key written as a name, on any database: Oracle's
+    // ALTER USER u IDENTIFIED BY pw and SQLCipher's PRAGMA key = "passphrase".
+    // What follows is "?" whether it was a word or a quoted name. JavaScript's
+    // \b, as the collector's: before a letter, no ASCII word character. The
+    // runs are possessive, which matches the same text here, so a long quoted
+    // name doesn't recurse once per character.
+    private static final String SECRET_NAME = "(\"(?:[^\"]++|\"\")*+\"?|`(?:[^`]++|``)*+`?|[^;,()" + SPACE.substring(1) + "++)";
+    private static final Pattern IDENTIFIED = Pattern.compile("((?<![A-Za-z0-9_])IDENTIFIED BY )" + SECRET_NAME, Pattern.CASE_INSENSITIVE);
+    private static final Pattern PRAGMA_KEY = Pattern.compile(
+            "((?<![A-Za-z0-9_])PRAGMA (?:[A-Za-z_][A-Za-z0-9_]*\\.)?(?:HEX)?(?:RE)?KEY ?[=(] ?)" + SECRET_NAME, Pattern.CASE_INSENSITIVE);
     // A character no collection name has: where the filter starts.
     private static final Pattern FILTER_START = Pattern.compile("[{}\\[\\]\"']");
     private static final Pattern MONGO = Pattern.compile(
@@ -245,7 +265,8 @@ final class QueryText {
                 out.append('?');
             } else if (c == '"' || c == '`') {
                 int end = quoteEnd(sql, i, c, !literal);
-                out.append(sql, i, end);
+                String run = sql.substring(i, end);
+                out.append(c == '"' && VALUE_QUOTES.contains(db) && !NAME.matcher(run).matches() ? "?" : run);
                 i = end;
             } else if (c == '$' && !afterWord && dollarTag(sql, i) != null) {
                 String tag = dollarTag(sql, i);
@@ -263,7 +284,9 @@ final class QueryText {
                 i += 1;
             }
         }
-        String shaped = LIST.matcher(out).replaceAll("(?)");
+        String shaped = IDENTIFIED.matcher(out).replaceAll("$1?");
+        shaped = PRAGMA_KEY.matcher(shaped).replaceAll("$1?");
+        shaped = LIST.matcher(shaped).replaceAll("(?)");
         shaped = ROWS.matcher(shaped).replaceAll("(?)");
         return trim(shaped);
     }

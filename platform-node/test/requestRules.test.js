@@ -11,6 +11,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { compileRequestRules, matchRequest, safePattern } = require("../lib/requestRules.js");
+const { originForm } = require("../lib/firewall.js");
 
 const cases = JSON.parse(fs.readFileSync(path.join(__dirname, "../../protocols/request-rules-cases.json"), "utf8"));
 
@@ -20,6 +21,10 @@ test("every shared case decides the same way here", () => {
     const matched = matchRequest(rules, { method: request.method, path: request.target, userAgent: request.ua });
     assert.equal(matched?.id ?? null, request.expect, `${request.why}: ${request.method} ${request.target}`);
   }
+});
+
+test("every shared request target is read in origin form, as the server's URL parser reads it", () => {
+  for (const { target, origin } of cases.targets) assert.equal(originForm(target), origin, target);
 });
 
 test("a rule with nothing to match is dropped, not applied to everything", () => {
@@ -74,10 +79,47 @@ test("a pattern that can blow up is refused, so a request can't hang the server"
   assert.ok(Date.now() - started < 1000, "matching must stay quick on a long path");
 });
 
-test("the cap is the first 2,000 characters of a part", () => {
-  const rules = compileRequestRules({ rules: [{ id: "deep", action: "block", path: { contains: ["/needle"] } }] });
+test("the plain matchers read the whole part, however long", () => {
+  const rules = compileRequestRules({ rules: [
+    { id: "deep", action: "block", path: { contains: ["/needle"] } },
+    { id: "jndi", action: "block", ua: { contains: ["${jndi:"] } },
+    { id: "end", action: "block", query: { suffix: ["&x=1"] } },
+  ] });
   assert.equal(matchRequest(rules, { path: "/a".repeat(100) + "/needle" })?.id, "deep");
-  assert.equal(matchRequest(rules, { path: "/" + "a".repeat(2100) + "/needle" }), null);
+  assert.equal(matchRequest(rules, { path: "/" + "a".repeat(2100) + "/needle" })?.id, "deep");
+  assert.equal(matchRequest(rules, { path: "/", userAgent: "x".repeat(5000) + "${jndi:ldap://x/a}" })?.id, "jndi");
+  assert.equal(matchRequest(rules, { path: `/?pad=${"x".repeat(5000)}&x=1` })?.id, "end");
+});
+
+test("a regex is searched in windows of 2,000, and its anchors only at the part's own edges", () => {
+  const rule = (id, regex) => ({ id, action: "block", path: { regex } });
+  const pad = "/" + "a".repeat(4500);
+  // A match straddling 2,000 is in the window that starts at 1,000.
+  const across = "/" + "a".repeat(1990) + "/evil.php";
+  assert.equal(matchRequest(compileRequestRules({ rules: [rule("r", "/evil\\.php")] }), { path: across })?.id, "r");
+  assert.equal(matchRequest(compileRequestRules({ rules: [rule("r", "/evil\\.php$")] }), { path: `${pad}/evil.php` })?.id, "r");
+  // "$" isn't the end of a window in the middle: only of the part.
+  const middle = "/" + "a".repeat(2990) + "/evil.php" + "b".repeat(2000);
+  assert.equal(matchRequest(compileRequestRules({ rules: [rule("r", "/evil\\.php$")] }), { path: middle }), null);
+  assert.equal(matchRequest(compileRequestRules({ rules: [rule("r", "/evil\\.php")] }), { path: middle })?.id, "r");
+  // "\$" is a dollar sign, searched everywhere.
+  assert.equal(matchRequest(compileRequestRules({ rules: [rule("r", "/\\$x")] }), { path: `${pad}/$x${pad}` })?.id, "r");
+  // "^" only in the window that starts the part.
+  assert.equal(matchRequest(compileRequestRules({ rules: [rule("r", "^/admin")] }), { path: `/admin${pad}` })?.id, "r");
+  assert.equal(matchRequest(compileRequestRules({ rules: [rule("r", "^/admin")] }), { path: `${pad.slice(0, 1000)}/admin${pad}` }), null);
+  // Both: only a part that fits one window.
+  assert.equal(matchRequest(compileRequestRules({ rules: [rule("r", "^/a+$")] }), { path: "/" + "a".repeat(1500) })?.id, "r");
+  assert.equal(matchRequest(compileRequestRules({ rules: [rule("r", "^/a+$")] }), { path: pad }), null);
+});
+
+test("a # ends the path and the query", () => {
+  const rules = compileRequestRules({ rules: [
+    { id: "login", action: "block", path: { exact: ["/login"] } },
+    { id: "q", action: "block", query: { suffix: ["=1"] } },
+  ] });
+  assert.equal(matchRequest(rules, { method: "POST", path: "/login#1" })?.id, "login");
+  assert.equal(matchRequest(rules, { path: "/login#x?y=2" })?.id, "login");
+  assert.equal(matchRequest(rules, { path: "/x?a=1#b" })?.id, "q");
 });
 
 test("a stray % elsewhere doesn't stop the rest being decoded", () => {

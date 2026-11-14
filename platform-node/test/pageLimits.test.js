@@ -275,6 +275,8 @@ test("Node: an absolute-form request line is matched by its path, and path(req) 
   t.after(() => plain.close());
   assert.equal(blocked(plain, "/wp-login.php"), true);
   assert.equal(blocked(plain, "http://example.com/wp-login.php?x=1"), true, "absolute-form, cut to its path");
+  assert.equal(blocked(plain, "x:/wp-login.php"), true, "a scheme with no // is routed by its path too");
+  assert.equal(blocked(plain, "/wp-login.php#1"), true, "a # goes no further than the request line");
   assert.equal(blocked(plain, "/blog/wp-login.php"), false);
 
   // An app that serves "/blog/<page>" as "/<page>" says so.

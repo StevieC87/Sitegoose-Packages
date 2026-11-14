@@ -13,6 +13,7 @@ import jakarta.servlet.FilterConfig;
 import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletRequestWrapper;
 import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -143,12 +144,14 @@ public class PlatformFilter implements Filter {
         HttpServletRequest request = (HttpServletRequest) req;
         HttpServletResponse response = (HttpServletResponse) res;
         long started = System.nanoTime();
-        String method = request.getMethod();
-        String uri = request.getRequestURI() == null ? "/" : request.getRequestURI();
-        String path = inApp(request, uri);
-        String query = request.getQueryString();
-        String remote = request.getRemoteAddr();
-        Map<String, String> headers = headers(request);
+        // What was sent, not what Spring's ForwardedHeaderFilter made of it.
+        HttpServletRequest sent = beforeForwarding(request);
+        String method = sent.getMethod();
+        String uri = sent.getRequestURI() == null ? "/" : sent.getRequestURI();
+        String path = inApp(sent, uri);
+        String query = sent.getQueryString();
+        String remote = sent.getRemoteAddr();
+        Map<String, String> headers = headers(sent);
         // The container already took the visitor's address from the proxy
         // headers (Tomcat's RemoteIpValve / RemoteIpFilter, Spring Boot's
         // server.forward-headers-strategy=native): what's left in them is the
@@ -178,7 +181,7 @@ public class PlatformFilter implements Filter {
             send(response, blocked, method);
             return;
         }
-        Reply closed = platform.maintenanceResponse(remote, forIp, path, query == null ? "" : query);
+        Reply closed = platform.maintenanceResponse(remote, forIp, path, query == null ? "" : query, request.isSecure() || sent.isSecure());
         if (closed != null && closed.status() != 0) {
             send(response, closed, method);
             return;
@@ -194,6 +197,8 @@ public class PlatformFilter implements Filter {
         });
         Route route = new Route(request);
         String ip = platform.clientIp(remote, forIp);
+        // For platform.requestIp(request): the address worked out here, not the headers read again.
+        request.setAttribute(Platform.IP_ATTRIBUTE, ip);
         Platform.Scope scope = platform.enterRequest(method, path, route, Platform.sessionId(request), ip);
         Request seen = new Request(request, response, tracked, method, route, path, started, headers, ip);
         seen.context = scope.context();
@@ -293,6 +298,30 @@ public class PlatformFilter implements Filter {
             current = current.getCause();
         }
         return false;
+    }
+
+    /** The wrappers Spring's ForwardedHeaderFilter puts around a request. */
+    static final String SPRING_FORWARDED = "org.springframework.web.filter.ForwardedHeaderFilter$";
+
+    /**
+     * The request as the container received it, under Spring's
+     * ForwardedHeaderFilter (server.forward-headers-strategy=framework). That
+     * filter believes the leftmost X-Forwarded-For or Forwarded entry, which
+     * the visitor writes, and hides the headers: read from under it, the
+     * address is trustProxy's, from the right, and the path is the one sent
+     * (X-Forwarded-Prefix is anyone's to write too).
+     */
+    static HttpServletRequest beforeForwarding(HttpServletRequest request) {
+        HttpServletRequest found = request;
+        ServletRequest current = request;
+        for (int i = 0; i < 20 && current instanceof ServletRequestWrapper; i++) {
+            ServletRequest inner = ((ServletRequestWrapper) current).getRequest();
+            if (current.getClass().getName().startsWith(SPRING_FORWARDED) && inner instanceof HttpServletRequest) {
+                found = (HttpServletRequest) inner;
+            }
+            current = inner;
+        }
+        return found;
     }
 
     private static Map<String, String> withoutForwarding(Map<String, String> headers) {

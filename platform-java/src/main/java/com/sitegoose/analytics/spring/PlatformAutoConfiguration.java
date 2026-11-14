@@ -119,13 +119,19 @@ public class PlatformAutoConfiguration {
                 .shutdownHook(false);
         String trust = text(env, "analytics.trust-proxy");
         String strategy = forwardStrategy(env);
-        if (!trust.isEmpty() && ("native".equals(strategy) || "framework".equals(strategy))) {
-            // The container (RemoteIpValve) or Spring (ForwardedHeaderFilter) has
-            // already taken the visitor's address from X-Forwarded-For and puts it in
-            // getRemoteAddr(): what is left in the header is the visitor's own
-            // writing, and believing it would let anyone pick their address.
-            Core_warn("analytics.trust-proxy is ignored: server.forward-headers-strategy is " + strategy
-                    + ", so Spring Boot already gives the visitor's address");
+        if (!trust.isEmpty() && "native".equals(strategy)) {
+            // The container (RemoteIpValve) has already taken the visitor's address
+            // from X-Forwarded-For and puts it in getRemoteAddr(): what is left in
+            // the header is the visitor's own writing, and believing it would let
+            // anyone pick their address.
+            Core_warn("analytics.trust-proxy is ignored: server.forward-headers-strategy is native, "
+                    + "so the server already gives the visitor's address");
+        } else if ("framework".equals(strategy)) {
+            // Spring's ForwardedHeaderFilter believes the leftmost entry, which the
+            // visitor writes. The filter reads from under it instead, so the
+            // address is counted from the right: one proxy, unless trust-proxy
+            // says how many.
+            o.trustProxy(trust.isEmpty() ? "1" : trust);
         } else if (!trust.isEmpty()) {
             o.trustProxy(trust);
         }
@@ -235,10 +241,10 @@ public class PlatformAutoConfiguration {
         FilterRegistrationBean<PlatformFilter> analyticsPlatformFilter(Platform platform, Environment env) {
             FilterRegistrationBean<PlatformFilter> registration = new FilterRegistrationBean<>(new PlatformFilter(platform));
             registration.setName("analyticsPlatformFilter");
-            // First of all; with forward-headers-strategy=framework, just after
-            // Spring's ForwardedHeaderFilter (itself first), so the visitor's
-            // address is the one it worked out.
-            registration.setOrder("framework".equals(forwardStrategy(env)) ? Ordered.HIGHEST_PRECEDENCE + 1 : Ordered.HIGHEST_PRECEDENCE);
+            // First of all. Next to Spring's ForwardedHeaderFilter (first too,
+            // with forward-headers-strategy=framework) either order is the same:
+            // the filter reads the request from under it (beforeForwarding).
+            registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
             registration.setAsyncSupported(true);
             registration.addUrlPatterns("/*");
             return registration;

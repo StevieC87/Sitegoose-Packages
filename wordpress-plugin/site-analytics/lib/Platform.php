@@ -80,8 +80,12 @@ class Platform
                     $this->modules[$name] = new Proxy(
                         $this->core->opt('endpoint'),
                         $this->core->opt('secret'),
-                        $this->core->dir(),
-                        isset($own['prefix']) ? $own['prefix'] : ''
+                        // Only a folder no one else can write to: what is
+                        // cached there is served as the site's own script.
+                        $this->core->trustedDir(),
+                        isset($own['prefix']) ? $own['prefix'] : '',
+                        '',
+                        (bool) $this->core->opt('public_endpoint')
                     );
                 } elseif ($name === 'firewall') {
                     $this->modules[$name] = new Firewall($own + $options, $this->core);

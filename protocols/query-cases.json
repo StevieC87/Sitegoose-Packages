@@ -203,6 +203,51 @@
       "expected": "SELECT a FROM t WHERE p = ? AND q = ?"
     },
     {
+      "statement": "PRAGMA key = \"x'2DD29CA851E7B56E4697B0E1F08507293D761A05CE4D1B628663F411A8086D99'\"",
+      "db": "sqlite",
+      "expected": "PRAGMA key = ?"
+    },
+    {
+      "statement": "PRAGMA key = \"correct horse\"; SELECT \"email\", \"t\".\"id\" FROM \"t\" WHERE \"name\" = \"bob@x.com\"",
+      "db": "sqlite",
+      "expected": "PRAGMA key = ?; SELECT \"email\", \"t\".\"id\" FROM \"t\" WHERE \"name\" = ?"
+    },
+    {
+      "statement": "PRAGMA main.rekey = 'new'; PRAGMA hexkey=\"2DD29CA8\"; PRAGMA key(passphrase)",
+      "db": "sqlite",
+      "expected": "PRAGMA main.rekey = ?; PRAGMA hexkey=?; PRAGMA key(?)"
+    },
+    {
+      "statement": "SELECT \"unclosed FROM t",
+      "db": "sqlite",
+      "expected": "SELECT ?"
+    },
+    {
+      "statement": "ALTER USER app IDENTIFIED BY \"N3wP@ss\" ACCOUNT UNLOCK",
+      "db": "oracle",
+      "expected": "ALTER USER app IDENTIFIED BY ? ACCOUNT UNLOCK"
+    },
+    {
+      "statement": "CREATE USER scott IDENTIFIED   BY tiger; SELECT \"EMP\".\"ENAME\" FROM \"EMP\"",
+      "db": "oracle",
+      "expected": "CREATE USER scott IDENTIFIED BY ?; SELECT \"EMP\".\"ENAME\" FROM \"EMP\""
+    },
+    {
+      "statement": "alter user app identified by Hunter2",
+      "db": "postgresql",
+      "expected": "alter user app identified by ?"
+    },
+    {
+      "statement": "SELECT \"col\" FROM t WHERE p = \"secret value\"",
+      "db": "other",
+      "expected": "SELECT \"col\" FROM t WHERE p = ?"
+    },
+    {
+      "statement": "SELECT \"my col\" FROM \"t\" WHERE a = 1",
+      "db": "postgresql",
+      "expected": "SELECT \"my col\" FROM \"t\" WHERE a = ?"
+    },
+    {
       "statement": "SELECT count() FROM events WHERE site_id = 'abc' AND ts > now() - INTERVAL 1 DAY AND x IN (1, 2) FORMAT JSON",
       "db": "clickhouse",
       "expected": "SELECT count() FROM events WHERE site_id = ? AND ts > now() - INTERVAL ? DAY AND x IN (?) FORMAT JSON"

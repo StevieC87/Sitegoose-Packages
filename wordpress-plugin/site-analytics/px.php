@@ -100,14 +100,23 @@ if (!$config) {
     exit;
 }
 
+// The storage folder, only when no one else can write to it: the tracker
+// cached there is served as the site's own script.
+$dir = '';
+if (!empty($config['dir'])) {
+    $dir = (new \AnalyticsPlatform\Core(array('secret' => '', 'endpoint' => $config['endpoint'], 'dir' => $config['dir'])))->trustedDir();
+}
 $proxy = new AnalyticsPlatform\Proxy(
     $config['endpoint'],
     '',
-    isset($config['dir']) ? $config['dir'] : '',
+    $dir,
     // The plugin works the prefix out from the secret and writes it here, so
     // the secret itself never has to sit in a file the web server serves.
     isset($config['prefix']) ? $config['prefix'] : '',
-    isset($config['key']) ? $config['key'] : ''
+    isset($config['key']) ? $config['key'] : '',
+    // Only https on public addresses, unless the plugin was told otherwise
+    // (site_analytics_endpoint_any()); a config written before it said so is held to it.
+    !isset($config['public_endpoint']) || $config['public_endpoint']
 );
 $found = $proxy->match(sa_px_path($proxy->prefix()));
 if ($found === null) {

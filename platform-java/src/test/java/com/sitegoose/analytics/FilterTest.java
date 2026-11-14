@@ -56,8 +56,15 @@ class FilterTest {
         }
     }
 
-    /** A Tomcat with the filter first, optionally behind RemoteIpValve, and the app below. */
     int start(boolean remoteIpValve) throws Exception {
+        return start(remoteIpValve, false);
+    }
+
+    /**
+     * A Tomcat with the filter first, optionally behind RemoteIpValve or after
+     * Spring's ForwardedHeaderFilter (forward-headers-strategy=framework), and the app below.
+     */
+    int start(boolean remoteIpValve, boolean springForwarded) throws Exception {
         platform = Platform.create(new PlatformOptions().siteId("a".repeat(24)).secret("s")
                 // Nothing listens there: nothing is sent, and the modules work as when the collector is down.
                 .endpoint("http://127.0.0.1:9").trustProxy("1").shutdownHook(false)
@@ -75,6 +82,17 @@ class FilterTest {
         Context ctx = tomcat.addContext("", Files.createTempDirectory("docbase").toString());
         if (remoteIpValve) {
             ctx.getPipeline().addValve(new RemoteIpValve());
+        }
+        if (springForwarded) {
+            FilterDef spring = new FilterDef();
+            spring.setFilterName("forwarded");
+            spring.setFilter(new org.springframework.web.filter.ForwardedHeaderFilter());
+            spring.setAsyncSupported("true");
+            ctx.addFilterDef(spring);
+            FilterMap first = new FilterMap();
+            first.setFilterName("forwarded");
+            first.addURLPattern("/*");
+            ctx.addFilterMap(first);
         }
         FilterDef def = new FilterDef();
         def.setFilterName("analytics");
@@ -100,6 +118,9 @@ class FilterTest {
                 req.setAttribute(Platform.ROUTE_ATTRIBUTE, "/orders/{id}");
             }
             switch (path) {
+                case "/ip":
+                    res.getWriter().write(platform.requestIp(req) + " " + req.getRemoteAddr());
+                    return;
                 case "/boom":
                     req.setAttribute(Platform.ROUTE_ATTRIBUTE, "/boom");
                     throw new IllegalStateException("app boom");
@@ -217,6 +238,20 @@ class FilterTest {
         assertEquals(200, status(forged), forged);
         assertTrue(forged.contains("from 198.51.100.7"), forged);
         assertEquals(403, status(get(port, "/", "X-Forwarded-For: 198.51.100.7, 203.0.113.5")));
+    }
+
+    @Test
+    void afterSpringsForwardedHeaderFilterTheAddressIsCountedFromTheRight() throws Exception {
+        int port = start(false, true);
+        // Spring believes the leftmost entry, the visitor's own; the filter takes the last hop.
+        String forged = get(port, "/ip", "X-Forwarded-For: 203.0.113.5, 198.51.100.7");
+        assertEquals(200, status(forged), forged);
+        assertTrue(forged.endsWith("198.51.100.7 203.0.113.5"), forged);
+        assertEquals(403, status(get(port, "/", "X-Forwarded-For: 198.51.100.7, 203.0.113.5")));
+        // Not an address to Spring: the rules about the request still apply.
+        assertEquals(403, status(get(port, "/actuator/env", "Forwarded: for=x")));
+        // A prefix anyone can write doesn't move the path the rules see.
+        assertEquals(403, status(get(port, "/actuator/env", "X-Forwarded-Prefix: /x")));
     }
 
     @Test

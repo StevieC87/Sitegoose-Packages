@@ -42,6 +42,56 @@ class RateBan(unittest.TestCase):
         self.assertEqual(rules, ["", "", "rate", "ban"])
 
 
+class CrossSite(unittest.TestCase):
+    """A request another site made the browser send comes from the visitor's
+    own address: refused, but nobody is banned for it here or elsewhere."""
+
+    def wall(self):
+        wall = Firewall(FakeCore())
+        wall.rules = wall._compile({
+            "v": 1, "enabled": True, "mode": "block", "rate": {"limit": 2, "window": 60}, "ban": {"seconds": 600},
+            "probes": {"exact": ["/.env"], "ban": 600},
+            "requests": {"rules": [{"id": "shell", "action": "block", "ban": 600, "path": {"exact": ["/shell.php"]}}]},
+        })
+        return wall
+
+    def actions(self, wall):
+        return {row["rule"]: row["action"] for row in wall.queue.values()}
+
+    def test_a_probe_or_a_rule_is_refused_but_bans_nobody(self):
+        for value in ("cross-site", "Same-Site"):
+            wall = self.wall()
+            for path, rule in (("/.env", "probe"), ("/shell.php", "request:shell")):
+                decision = wall.check("203.0.113.9", "GET", path, fetch_site=value)
+                self.assertEqual((decision["action"], decision["rule"], decision["status"]), ("block", rule, 403))
+            self.assertEqual(wall.bans, {}, value)
+            self.assertEqual(self.actions(wall), {"probe": "monitor", "request:shell": "monitor"})
+            self.assertEqual(wall.check("203.0.113.9", "GET", "/")["rule"], "", "not banned afterwards")
+
+    def test_the_rate_is_answered_but_bans_nobody(self):
+        wall = self.wall()
+        rules = [wall.check("203.0.113.9", "GET", "/", fetch_site="cross-site")["rule"] for _ in range(4)]
+        self.assertEqual(rules, ["", "", "rate", "rate"])
+        self.assertEqual(wall.bans, {})
+        self.assertEqual(self.actions(wall), {"rate": "monitor"})
+
+    def test_same_origin_or_no_header_bans_as_before(self):
+        for value in ("same-origin", "none", ""):
+            wall = self.wall()
+            self.assertEqual(wall.check("203.0.113.9", "GET", "/.env", fetch_site=value)["rule"], "probe")
+            self.assertEqual(self.actions(wall), {"probe": "block"})
+            self.assertEqual(wall.check("203.0.113.9", "GET", "/")["rule"], "ban", value)
+
+    def test_every_adapter_hands_the_header_over(self):
+        from analytics_platform import Platform
+        platform = Platform.__new__(Platform)
+        wall = self.wall()
+        platform._modules = {"firewall": wall}
+        status, _, _ = platform.blocked("203.0.113.9", {"sec-fetch-site": "cross-site"}, "GET", "/.env")
+        self.assertEqual(status, 403)
+        self.assertEqual(wall.bans, {})
+
+
 class Cloudflare(unittest.TestCase):
     """CF-Connecting-IP is the visitor only from Cloudflare: anyone who reaches
     the origin directly can send it, and would pick their own address past

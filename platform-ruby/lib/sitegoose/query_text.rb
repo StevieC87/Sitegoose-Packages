@@ -31,6 +31,29 @@ module SiteGoose
     MONGO = /\A([^#{SPACE}]+)(?: ([^#{SPACE}]+))?(?: (.*))?\z/m.freeze
     # A JavaScript object lists keys that are array indexes first, in order.
     INDEX_KEY = /\A(?:0|[1-9][0-9]*)\z/.freeze
+    # Where "..." may hold a value rather than a name: SQLite takes a
+    # double-quoted string as a literal when no column has that name
+    # (SQLCipher's PRAGMA key = "x'2DD2..'"), Oracle writes a password as a
+    # quoted name, and an unknown database may do either. There "..." is
+    # kept only when it reads as a plain name, closed: "email", never
+    # "x'2D..'", "N3w P@ss" or an unclosed one.
+    VALUE_QUOTES = %w[sqlite oracle other].freeze
+    NAME = /\A"[A-Za-z_][A-Za-z0-9_$#]{0,127}"\z/.freeze
+
+    # A keyword matched in either case, ASCII only, as JavaScript's /i reads
+    # it: Ruby's /i would also take the Kelvin sign for a K.
+    def self.either_case(word)
+      word.gsub(/[A-Za-z]/) { |c| "[#{c.upcase}#{c.downcase}]" }
+    end
+
+    # A password or key written as a name, on any database: Oracle's
+    # ALTER USER u IDENTIFIED BY pw and SQLCipher's PRAGMA key = "passphrase".
+    # What follows is "?" whether it was a word or a quoted name. The
+    # lookbehind is JavaScript's \b, ASCII only: Ruby's \b counts an accented
+    # letter as a word character.
+    SECRET_NAME = "(\"(?:[^\"]|\"\")*\"?|`(?:[^`]|``)*`?|[^#{SPACE};,()]+)"
+    IDENTIFIED = /((?<![A-Za-z0-9_])#{either_case('IDENTIFIED BY ')})#{SECRET_NAME}/.freeze
+    PRAGMA_KEY = /((?<![A-Za-z0-9_])#{either_case('PRAGMA ')}(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:#{either_case('HEX')})?(?:#{either_case('RE')})?#{either_case('KEY')} ?[=(] ?)#{SECRET_NAME}/.freeze
 
     module_function
 
@@ -174,7 +197,8 @@ module SiteGoose
           out << "?"
         elsif byte == DOUBLE_QUOTE || byte == BACKTICK
           skip_quoted(scanner, byte, !literal)
-          out << sql.byteslice(at, scanner.pos - at)
+          run = sql.byteslice(at, scanner.pos - at)
+          out << (byte == DOUBLE_QUOTE && VALUE_QUOTES.include?(db) && !run.match?(NAME) ? "?" : run)
         elsif byte == DOLLAR && !word_before && (tag = scanner.check(DOLLAR_TAG_AT)) && tag.size <= TAG_MAX
           scanner.pos += tag.bytesize
           scanner.terminate unless scanner.skip_until(/#{Regexp.escape(tag)}/)
@@ -192,7 +216,7 @@ module SiteGoose
           out << scanner.getch
         end
       end
-      trim(out.gsub(LIST, "(?)").gsub(ROWS, "(?)"))
+      trim(out.gsub(IDENTIFIED, "\\1?").gsub(PRAGMA_KEY, "\\1?").gsub(LIST, "(?)").gsub(ROWS, "(?)"))
     end
 
     # A Mongo filter or pipeline's shape: keys kept, every value "?", and an

@@ -36,6 +36,7 @@ final class ServletRequests {
                         out.put("getParameterMap", api.getMethod("getParameterMap"));
                         out.put("getMethod", api.getMethod("getMethod"));
                         out.put("getRequestURI", api.getMethod("getRequestURI"));
+                        out.put("getAttribute", api.getMethod("getAttribute", String.class));
                         return out;
                     }
                 } catch (ClassNotFoundException | NoSuchMethodException | LinkageError absent) {
@@ -65,6 +66,47 @@ final class ServletRequests {
     static String header(Object request, String name) {
         Object value = call(request, "getHeader", name);
         return value instanceof String ? (String) value : "";
+    }
+
+    static Object attribute(Object request, String name) {
+        return call(request, "getAttribute", name);
+    }
+
+    private static final String[] WRAPPERS = {"jakarta.servlet.ServletRequestWrapper", "javax.servlet.ServletRequestWrapper"};
+    private static final String SPRING_FORWARDED = "org.springframework.web.filter.ForwardedHeaderFilter$";
+
+    /** The request a wrapper wraps, or null when it is none. */
+    private static Object unwrap(Object request) {
+        for (String name : WRAPPERS) {
+            try {
+                Class<?> wrapper = Class.forName(name, false, request.getClass().getClassLoader());
+                if (wrapper.isInstance(request)) {
+                    return wrapper.getMethod("getRequest").invoke(request);
+                }
+            } catch (ReflectiveOperationException | LinkageError | RuntimeException absent) {
+                // try the other API
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The request from under Spring's ForwardedHeaderFilter, which believes
+     * the leftmost (visitor-written) X-Forwarded-For entry and hides the
+     * headers; the request itself when it isn't wrapped by it. As the
+     * filter's PlatformFilter.beforeForwarding does.
+     */
+    static Object beforeForwarding(Object request) {
+        Object found = request;
+        Object current = request;
+        for (int i = 0; i < 20 && current != null; i++) {
+            Object inner = unwrap(current);
+            if (inner != null && current.getClass().getName().startsWith(SPRING_FORWARDED) && isRequest(inner)) {
+                found = inner;
+            }
+            current = inner;
+        }
+        return found;
     }
 
     static String remoteAddr(Object request) {

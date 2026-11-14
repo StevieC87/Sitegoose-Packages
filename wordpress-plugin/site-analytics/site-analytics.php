@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Site Analytics
  * Description: Your analytics in WordPress: the tracker served from your own domain so ad blockers don't hide visitors, WooCommerce orders sent from your server, a firewall, error monitoring, server speed, file monitoring and a check of your plugins for known security holes. Settings → Site Analytics.
- * Version: 2.5.0
+ * Version: 2.5.1
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * License: MIT
@@ -91,14 +91,49 @@ function site_analytics_platform_storage()
     return WP_CONTENT_DIR . '/cache/site-analytics';
 }
 
-// A platform with these settings; site_analytics_platform() is the one for this request.
-function site_analytics_platform_make(array $settings)
+function site_analytics_load_lib()
 {
     foreach (array('Core', 'RequestRules', 'Challenge', 'Firewall', 'Errors', 'Analytics', 'Performance', 'Queries', 'Queues', 'Resources', 'Crawlers', 'Forms', 'Audit', 'Flags', 'Files', 'Inventory', 'Posture', 'Proxy', 'Platform') as $class) {
         if (!class_exists('AnalyticsPlatform\\' . $class)) {
             require_once __DIR__ . '/lib/' . $class . '.php';
         }
     }
+}
+
+// The Collector URL is called by the server, and the proxy hands visitors
+// what it answers, so whoever sets it could have the server fetch and show
+// them any address it can reach. On a network a sub-site's administrator
+// isn't the server's, so there only a network administrator may change it,
+// and anywhere it is called only while it is https on public addresses
+// (Proxy::publicTarget(), checked when saved and before every request).
+// define('SITE_ANALYTICS_PRIVATE_ENDPOINT', true) in wp-config.php allows a
+// collector on this server or its private network (development).
+function site_analytics_endpoint_any()
+{
+    return defined('SITE_ANALYTICS_PRIVATE_ENDPOINT') && SITE_ANALYTICS_PRIVATE_ENDPOINT;
+}
+
+function site_analytics_endpoint_editable()
+{
+    return !is_multisite() || current_user_can('manage_network_options');
+}
+
+function site_analytics_endpoint_ok($endpoint)
+{
+    if ((string) $endpoint === '') {
+        return false;
+    }
+    if (site_analytics_endpoint_any()) {
+        return true;
+    }
+    site_analytics_load_lib();
+    return AnalyticsPlatform\Proxy::publicTarget($endpoint) !== null;
+}
+
+// A platform with these settings; site_analytics_platform() is the one for this request.
+function site_analytics_platform_make(array $settings)
+{
+    site_analytics_load_lib();
     $counter = null;
     // Without APCu, a persistent object cache (Redis, Memcached) can count.
     if (!(function_exists('apcu_enabled') && apcu_enabled()) && wp_using_ext_object_cache()) {
@@ -113,6 +148,7 @@ function site_analytics_platform_make(array $settings)
         'endpoint' => $settings['endpoint'],
         'storage' => site_analytics_platform_storage(),
         'platform' => 'wordpress',
+        'public_endpoint' => !site_analytics_endpoint_any(),
         // Checked on the front end only (below), so wp-admin and logins keep working.
         'maintenance_manual' => true,
         'firewall' => array(
@@ -293,8 +329,9 @@ const SITE_ANALYTICS_PROXY_OPTION = 'site_analytics_proxy';
 // answer. 2: one config per site, named by its prefix, kept outside the plugin
 // folder; the prefix is in every address px.php is asked for. 3: the config
 // holds the proxy key. 4: and the site id, so px.php can apply the firewall's
-// address rules (deny, bans) before it forwards anything.
-const SITE_ANALYTICS_PROXY_FORMAT = 4;
+// address rules (deny, bans) before it forwards anything. 5: and whether the
+// collector may be on a private address (site_analytics_endpoint_any()).
+const SITE_ANALYTICS_PROXY_FORMAT = 5;
 const SITE_ANALYTICS_PROXY_REPAIR_HOOK = 'site_analytics_proxy_repair';
 
 // The path on the site, from the secret: not guessable from the page, and the
@@ -391,6 +428,8 @@ function site_analytics_proxy_write_config(array $settings, $platform = null)
         'key' => AnalyticsPlatform\Proxy::keyFor($settings['secret']),
         // Not secret (every page carries it): it names this site's bans.
         'site_id' => (string) $settings['site_id'],
+        // px.php can't read wp-config.php, so it is told here.
+        'public_endpoint' => !site_analytics_endpoint_any(),
     ), true) . ";\n";
     foreach (site_analytics_proxy_config_dirs() as $dir) {
         site_analytics_storage_guard($dir);
@@ -570,12 +609,13 @@ function site_analytics_tracker_release()
 function site_analytics_tracker_release_check()
 {
     $settings = site_analytics_platform_settings();
-    if ($settings['endpoint'] === '' || !SITE_ANALYTICS_RELEASE_KEYS) {
+    if (!SITE_ANALYTICS_RELEASE_KEYS || !site_analytics_endpoint_ok($settings['endpoint'])) {
         return;
     }
     $res = wp_remote_get(untrailingslashit($settings['endpoint']) . '/tracker-release.json', array(
         'timeout' => 10,
         'redirection' => 0,
+        'reject_unsafe_urls' => !site_analytics_endpoint_any(),
         'site_analytics_own' => true,
     ));
     if (is_wp_error($res) || (int) wp_remote_retrieve_response_code($res) !== 200) {
@@ -1625,7 +1665,14 @@ function site_analytics_platform_save()
         return array('error', 'The site ID is 24 letters and numbers (0-9, a-f).');
     }
     $settings['site_id'] = $siteId;
-    $settings['endpoint'] = untrailingslashit(esc_url_raw($field('endpoint')));
+    // On a network only a network administrator may point it elsewhere.
+    if (site_analytics_endpoint_editable()) {
+        $endpoint = untrailingslashit(esc_url_raw($field('endpoint')));
+        if ($endpoint !== '' && !site_analytics_endpoint_ok($endpoint)) {
+            return array('error', 'The collector URL must start with https:// and be on a public address. Nothing was saved.');
+        }
+        $settings['endpoint'] = $endpoint;
+    }
     if ($field('secret') !== '') {
         $settings['secret'] = $field('secret');
     }
@@ -1867,7 +1914,12 @@ function site_analytics_platform_page()
                     </tr>
                     <tr>
                         <th scope="row"><label for="sa-endpoint">Collector URL</label></th>
-                        <td><input id="sa-endpoint" name="endpoint" type="url" class="regular-text code" value="<?php echo esc_attr($settings['endpoint']); ?>"></td>
+                        <td>
+                            <input id="sa-endpoint" name="endpoint" type="url" class="regular-text code" value="<?php echo esc_attr($settings['endpoint']); ?>"<?php echo site_analytics_endpoint_editable() ? '' : ' readonly'; ?>>
+                            <?php if (!site_analytics_endpoint_editable()) : ?>
+                                <p class="description">Only a network administrator can change this.</p>
+                            <?php endif; ?>
+                        </td>
                     </tr>
                     <tr>
                         <th scope="row"><label for="sa-secret">Site secret</label></th>

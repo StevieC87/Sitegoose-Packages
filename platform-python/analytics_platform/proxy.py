@@ -18,6 +18,7 @@ It answers before every other module: a visitor's beacon is our own traffic,
 not a page of the site, so it shouldn't be counted, timed or rate-limited.
 """
 import hashlib
+import http.client
 import re
 import threading
 import time
@@ -56,6 +57,15 @@ FILE_PATH = re.compile(r"v(\d+(?:\.\d+\.\d+)?)/([a-z]+\.js)\Z")
 # own site. Shared cases: sdk/protocols/proxy-answer-cases.json.
 ANSWER_TYPES = frozenset(("application/json", "text/plain", "image/webp"))
 _VISIBLE = re.compile(r"[\x20-\x7e]*")
+# A query a URL can carry as it is. The visitor writes it, and http.client
+# refuses a space, a control character or a byte past 0x7f before it
+# connects: forwarded, that would count against the collector and stop
+# every visitor's beacons (the breaker).
+QUERY = re.compile(r"[\x21-\x7e]*\Z")
+# What says the collector itself failed: no connection, a timeout, a broken
+# answer. Anything else (a ValueError from text http.client won't send) is
+# this request's own fault, never the collector's.
+UNREACHABLE = (OSError, http.client.HTTPException)
 
 
 def answer_type(value):
@@ -193,8 +203,11 @@ class Proxy:
                 # The collector answered: only its own failures count against it.
                 self._broke() if answer.code >= 500 else self._worked()
                 self._remember_failure(rest)
-            except Exception as error:
+            except UNREACHABLE as error:
                 self._broke()
+                self._remember_failure(rest)
+                self.core.log("proxy", "could not fetch %s: %s" % (rest, error))
+            except Exception as error:
                 self._remember_failure(rest)
                 self.core.log("proxy", "could not fetch %s: %s" % (rest, error))
         # Upstream is unreachable: an old copy beats no tracker at all.
@@ -220,6 +233,9 @@ class Proxy:
             return NOT_FOUND
         if body is not None and len(body) > MAX_BODY:
             return 413, [], b""
+        query = query.decode("latin-1") if isinstance(query, bytes) else str(query or "")
+        if not QUERY.match(query):
+            return 400, [("Content-Type", "text/plain; charset=utf-8")], b"Bad request"
         # The visitor's address: the collector needs it for the country, the
         # daily visitor ID and the per-visitor rate limit.
         out = {"X-Forwarded-For": client_ip or ""}
@@ -243,11 +259,14 @@ class Proxy:
         except urllib.error.HTTPError as answer:
             self._broke() if answer.code >= 500 else self._worked()
             return answer.code, self._answer_headers(answer.headers), answer.read(MAX_BODY)
-        except Exception as error:
+        except UNREACHABLE as error:
             # The tracker already treats a failed beacon as lost and carries on.
             self._broke()
             self.core.log("proxy", "could not reach the collector: %s" % error)
             return 502, [], b""
+        except Exception as error:
+            self.core.log("proxy", "could not send a beacon on: %s" % error)
+            return 400, [], b""
 
     @staticmethod
     def _answer_headers(headers):

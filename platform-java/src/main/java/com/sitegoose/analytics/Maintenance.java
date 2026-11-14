@@ -63,9 +63,10 @@ final class Maintenance {
     /**
      * Null to let the request through; a Reply with status 0 to let it through
      * and remember the preview link (its headers go on the response); else the
-     * "back soon" page.
+     * "back soon" page. secure: the request came over HTTPS, so the cookie,
+     * which carries the code itself, is never sent over plain HTTP.
      */
-    Reply decide(String ip, String path, String query, String cookieHeader) {
+    Reply decide(String ip, String path, String query, String cookieHeader, boolean secure) {
         Map<String, Object> m = core.isOn("maintenance") ? core.maintenance() : null;
         if (m == null || !Boolean.TRUE.equals(m.get("on")) || (skip != null && skip.test(path))) {
             return null;
@@ -85,7 +86,8 @@ final class Maintenance {
         String code = bypass instanceof String ? (String) bypass : "";
         if (!code.isEmpty()) {
             if (code.equals(queryValue(query, COOKIE))) {
-                return new Reply(0).header("Set-Cookie", COOKIE + "=" + code + "; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax");
+                return new Reply(0).header("Set-Cookie", COOKIE + "=" + code + "; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax"
+                        + (secure ? "; Secure" : ""));
             }
             List<String> values = Challenge.cookieValues(cookieHeader, COOKIE);
             if (values.contains(code)) {

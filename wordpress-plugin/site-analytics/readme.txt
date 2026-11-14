@@ -1,7 +1,7 @@
 === Site Analytics ===
 Requires at least: 5.6
 Requires PHP: 7.4
-Stable tag: 2.5.0
+Stable tag: 2.5.1
 License: MIT
 
 Your analytics in WordPress: the tracker, WooCommerce orders sent from your server, a firewall, error monitoring and logins.
@@ -30,4 +30,5 @@ The rate limit needs the APCu PHP extension or a persistent object cache (Redis,
 
 1. Upload the plugin and activate it. It replaces the tracker-only Site Analytics plugin if you have it.
 2. Settings → Site Analytics: enter your site ID, collector URL and site secret (Site settings in your dashboard).
+   The collector URL must be https on a public address (for one on your own server or network, add `define('SITE_ANALYTICS_PRIVATE_ENDPOINT', true);` to wp-config.php). On a network, only a network administrator can change it.
 3. If your site is behind Cloudflare or a load balancer, choose it under Proxy.

@@ -15,9 +15,11 @@ namespace AnalyticsPlatform;
 class RequestRules
 {
     const MAX_RULES = 200;
-    // How much of each part a rule may look at. Patterns come from our rules,
-    // but the text comes from whoever is asking, and PCRE can't be timed out
-    // here: a bounded slice keeps a bad pattern from being a hung request.
+    // How much of a part one regex search may look at. Patterns come from our
+    // rules, but the text comes from whoever is asking, and PCRE can't be
+    // timed out here: a bounded window keeps a bad pattern from being a hung
+    // request. The plain matchers cost one pass and read the whole part, so
+    // filler in front of an attack can't carry it past them.
     const MAX_TEXT = 2000;
     const MAX_REGEX = 200;
     // A delimiter a URL pattern can't hold, so a pattern never has to be escaped.
@@ -336,7 +338,39 @@ class RequestRules
                     }
                 }
             }
-            if (isset($section['regex']) && @preg_match(self::DELIM . $section['regex'] . self::DELIM . 'i', $text) === 1) {
+            if (isset($section['regex']) && self::regexHits($section['regex'], $text)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // A regex over a part of any length, MAX_TEXT characters at a time: the
+    // first window, then one starting every MAX_TEXT / 2 until a window
+    // reaches the end, so a match up to 1,000 characters long is found
+    // wherever it sits. A window's edges aren't the part's: "^..." is tried
+    // only in the window that starts the part and "...$" only in the one that
+    // ends it (both: only when one window is the whole part).
+    private static function regexHits($pattern, $text)
+    {
+        $regex = self::DELIM . $pattern . self::DELIM . 'i';
+        $length = strlen($text);
+        if ($length <= self::MAX_TEXT) {
+            return @preg_match($regex, $text) === 1;
+        }
+        $starts = $pattern[0] === '^';
+        // A "$" not escaped: an even run of backslashes before it.
+        $ends = substr($pattern, -1) === '$' && (strlen($pattern) - 1 - strlen(rtrim(substr($pattern, 0, -1), '\\'))) % 2 === 0;
+        if ($starts && $ends) {
+            return false;
+        }
+        if ($starts) {
+            return @preg_match($regex, substr($text, 0, self::MAX_TEXT)) === 1;
+        }
+        $step = intdiv(self::MAX_TEXT, 2);
+        $last = intdiv($length - self::MAX_TEXT + $step - 1, $step) * $step;
+        for ($at = $ends ? $last : 0; $at <= $last; $at += $step) {
+            if (@preg_match($regex, substr($text, $at, self::MAX_TEXT)) === 1) {
                 return true;
             }
         }
@@ -363,21 +397,27 @@ class RequestRules
 
     // The request in every form a rule is matched against, worked out once
     // and shared by the request rules and the page limits.
+    // Every part whole: a rule that saw only the first 2,000 characters
+    // would let filler carry an attack past it, and the routed path is
+    // resolved from the whole path ("/./././…/login" is "/login" however many
+    // "./" it carries).
     public static function prepare($method, $path, $userAgent)
     {
-        $target = (string) $path;
+        // A "#" ends the path and the query: every router drops it, so
+        // "POST /login#1" runs the login.
+        $target = explode('#', (string) $path, 2)[0];
         $mark = strpos($target, '?');
-        $sent = substr($mark === false ? $target : substr($target, 0, $mark), 0, self::MAX_TEXT);
-        $rawQuery = strtolower(substr($mark === false ? '' : substr($target, $mark + 1), 0, self::MAX_TEXT));
+        $sent = $mark === false ? $target : substr($target, 0, $mark);
+        $rawQuery = strtolower($mark === false ? '' : substr($target, $mark + 1));
         return array(
             'method' => strtoupper((string) $method),
             'path' => self::normalizePath($sent),
-            'decoded_path' => self::normalizePath(substr(self::decodeOnce($sent), 0, self::MAX_TEXT)),
-            'routed' => substr(self::routedPath($sent), 0, self::MAX_TEXT),
+            'decoded_path' => self::normalizePath(self::decodeOnce($sent)),
+            'routed' => self::routedPath($sent),
             'query' => $rawQuery,
             // Lowered again after decoding: %55NION is UNION, and the patterns are lower case.
-            'decoded_query' => strtolower(substr(self::decodeOnce($rawQuery), 0, self::MAX_TEXT)),
-            'ua' => strtolower(substr((string) $userAgent, 0, self::MAX_TEXT)),
+            'decoded_query' => strtolower(self::decodeOnce($rawQuery)),
+            'ua' => strtolower((string) $userAgent),
         );
     }
 

@@ -51,6 +51,55 @@ class SharedCases(unittest.TestCase):
         self.assertEqual(len(compile_rules({"rules": many})), 200)
 
 
+class OriginForm(unittest.TestCase):
+    """The request line's target as the router reads it: gunicorn routes
+    "x:/admin" as "/admin", so the firewall must match it as "/admin" too."""
+
+    def test_every_shared_target(self):
+        from analytics_platform.core import origin_form
+        with open(CASES) as handle:
+            targets = json.load(handle)["targets"]
+        self.assertTrue(targets)
+        for case in targets:
+            self.assertEqual(origin_form(case["target"]), case["origin"], case["target"])
+
+    def test_the_firewall_matches_the_routed_target(self):
+        from analytics_platform.core import origin_form
+        rules = compile_rules({"rules": [{"id": "admin", "action": "block", "path": {"prefix": ["/admin"]}}]})
+        self.assertEqual(match_request(rules, "POST", origin_form("x:/admin/login/"), "")["id"], "admin")
+
+
+class RegexWindows(unittest.TestCase):
+    """Only a regex is held to 2,000 characters at a time; a window's edges
+    are not the part's, so anchors hold only where the part really starts
+    or ends."""
+
+    def rules(self, pattern):
+        return compile_rules({"rules": [{"id": "r", "action": "block", "query": {"regex": pattern}}]})
+
+    def test_found_past_the_first_window(self):
+        target = "/x?" + "a" * 5000 + "union select"
+        self.assertEqual(match_request(self.rules("union\\s+select"), "GET", target, "")["id"], "r")
+
+    def test_a_caret_only_at_the_start(self):
+        rules = self.rules("^pad")
+        self.assertEqual(match_request(rules, "GET", "/x?pad" + "a" * 5000, "")["id"], "r")
+        # 1,000 characters in is a window's start, never the query's.
+        self.assertIsNone(match_request(rules, "GET", "/x?" + "a" * 1000 + "pad" + "a" * 5000, ""))
+
+    def test_a_dollar_only_at_the_end(self):
+        rules = self.rules("end$")
+        self.assertEqual(match_request(rules, "GET", "/x?" + "a" * 5000 + "end", "")["id"], "r")
+        self.assertIsNone(match_request(rules, "GET", "/x?" + "a" * 1997 + "end" + "a" * 3000, ""))
+        # An escaped "$" is a character, not an anchor.
+        self.assertEqual(match_request(self.rules("end\\$"), "GET", "/x?" + "a" * 1997 + "end$" + "a" * 3000, "")["id"], "r")
+
+    def test_both_anchors_only_on_a_short_part(self):
+        rules = self.rules("^a+$")
+        self.assertEqual(match_request(rules, "GET", "/x?" + "a" * 2000, "")["id"], "r")
+        self.assertIsNone(match_request(rules, "GET", "/x?" + "a" * 2001, ""))
+
+
 class PatternSafety(unittest.TestCase):
     """(a+)+ takes exponential time on input that nearly matches, and `re`
     can't be timed out: the client must refuse the pattern, not match it."""

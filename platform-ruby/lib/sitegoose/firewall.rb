@@ -108,14 +108,25 @@ module SiteGoose
 
     # True when the path (no query, lower-cased, "//" as "/") is a probe, as
     # sent or as the router reads it (";params" dropped, "." and ".."
-    # resolved, decoded once: "/x/..;/.env" is "/.env").
-    def self.probe?(path, probes)
+    # resolved, decoded once: "/x/..;/.env" is "/.env"). also: the path the
+    # app routes on, when the server read the target differently.
+    def self.probe?(path, probes, also = nil)
       return false unless probes
 
-      clean = SiteGoose.text(path).split(/[?#]/, 2)[0].to_s.downcase.gsub(%r{/{2,}}, "/")
-      [clean, RequestRules.normalize_target(path)].uniq.any? do |text|
+      texts = [path, also].compact.flat_map do |given|
+        [SiteGoose.text(given).split(/[?#]/, 2)[0].to_s.downcase.gsub(%r{/{2,}}, "/"), RequestRules.normalize_target(given)]
+      end
+      texts.uniq.any? do |text|
         probes[:exact].key?(text) || probes[:prefix].any? { |p| text.start_with?(p) }
       end
+    end
+
+    # A request another site made the browser send (firewall.md, "Checking a
+    # request"): an <img> or a no-cors fetch on any page can ask for /.env,
+    # or for a page 120 times a minute, from the visitor's own address. It
+    # is refused but bans no one, and is reported as only watched.
+    def self.foreign?(fetch_site)
+      %w[cross-site same-site].include?(SiteGoose.text(fetch_site).strip.downcase)
     end
 
     # The rules' page limits -> {exempt:, rules:}, or nil when there are none.
@@ -337,7 +348,9 @@ module SiteGoose
           next note_over(name, @counter.call(name, limit["window"] * 2).to_i > limit["limit"])
         end
 
-        key = "#{limit['id']} #{limit['window']} #{who}#{limit['each'] ? " #{req[:routed_path]}" : ''}"
+        # A page past 2,000 characters is counted by its first 2,000: a key
+        # as long as the path would let a crawler fill the table with megabytes.
+        key = "#{limit['id']} #{limit['window']} #{who}#{limit['each'] ? " #{req[:routed_path][0, RequestRules::MAX_TEXT]}" : ''}"
         table = limit["each"] ? @path_counts : @limit_counts
         if peek
           entry = table[key]
@@ -454,8 +467,11 @@ module SiteGoose
     # -> {action: "allow" | "block" | "monitor", rule:, status:}. Allowed
     # addresses skip every other rule. accept and cookie (the request's
     # headers) are for the browser check: rule "challenge", status 503,
-    # answered with challenge_page().
-    def check(ip, method = "", path = "", user_agent = "", accept = "", cookie = "", now = nil)
+    # answered with challenge_page(). fetch_site: the Sec-Fetch-Site header.
+    # overrides and also_path: RequestRules.prepare's (SiteGoose.method_overrides
+    # and SiteGoose.routed_also).
+    def check(ip, method = "", path = "", user_agent = "", accept = "", cookie = "", now = nil,
+              fetch_site: "", overrides: nil, also_path: nil)
       allow = { action: "allow", rule: "", status: 200 }
       rules = @rules
       return allow if rules.nil? || !rules[:enabled]
@@ -469,14 +485,18 @@ module SiteGoose
         { "ip" => ip, "rule" => name, "action" => act, "method" => SiteGoose.text(method, 10),
           "path" => SiteGoose.text(path).split("?", 2)[0].to_s[0, 300], "user_agent" => SiteGoose.text(user_agent, 300) }
       end
+      # Another site's request: refused as any other, but never a ban.
+      bans = !Firewall.foreign?(fetch_site)
       rule = address_rule(rules, key, ip)
-      if rule.empty? && Firewall.probe?(path, rules[:probes])
+      if rule.empty? && Firewall.probe?(path, rules[:probes], also_path)
         rule = "probe"
         # Asking for a secret file: banned here in block mode; the report bans it on the other servers.
-        ban_here(ip, rules[:probes][:ban]) if action == "block"
+        ban_here(ip, rules[:probes][:ban]) if action == "block" && bans
       end
       limits = rules[:limits]
-      req = RequestRules.prepare(method, path, user_agent) if rule.empty? && (!rules[:requests].empty? || limits)
+      if rule.empty? && (!rules[:requests].empty? || limits)
+        req = RequestRules.prepare(method, path, user_agent, overrides: overrides, also_path: also_path)
+      end
       if rule.empty?
         matched = RequestRules.match(rules[:requests], method, path, user_agent, req)
         if matched
@@ -484,7 +504,7 @@ module SiteGoose
           # A rule the dashboard only watches passes even in block mode; one
           # that blocks also bans the address here, as a flood does.
           action = action == "block" && matched["action"] == "block" ? "block" : "monitor"
-          ban_here(ip, matched["ban"]) if action == "block" && matched["ban"].positive?
+          ban_here(ip, matched["ban"]) if action == "block" && matched["ban"].positive? && bans
         end
       end
       # A static file isn't counted toward the page limits or `rate`, only
@@ -517,7 +537,7 @@ module SiteGoose
       if rule.empty? && rules[:rate] && !goodbot && over_rate?(ip, rules[:rate], peek: static)
         rule = "rate"
         # Banned here straight away in block mode, as a probe is; the report bans it on the other servers.
-        ban_here(ip, rules[:ban]) if action == "block"
+        ban_here(ip, rules[:ban]) if action == "block" && bans
       end
       if watched
         if rule.empty?
@@ -541,7 +561,10 @@ module SiteGoose
       decision = if rule.empty?
                    allow
                  else
-                   report(event.call(rule, action))
+                   # Reported as watched, so the collector bans no one elsewhere
+                   # and counts nothing toward `shared`.
+                   foreign = !bans && (%w[probe rate].include?(rule) || rule.start_with?("request:"))
+                   report(event.call(rule, foreign ? "monitor" : action))
                    if limit_window
                      # retry_after: the limit's own window, which the 429 carries.
                      { action: action, rule: rule, status: 429, retry_after: limit_window }

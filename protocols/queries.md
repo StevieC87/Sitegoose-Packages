@@ -115,7 +115,7 @@ Scan left to right, building the output:
 | --- | --- |
 | `--` to end of line; `#` to end of line on `mysql`/`mariadb`; `/* … */` (or to the end) | one space |
 | `'…'` (a doubled `''` escapes; so does a backslash on `mysql`, `mariadb`, `clickhouse` and `other`, but on `postgresql`, `sqlite`, `mssql` and `oracle` a backslash is a plain character, in strings and in `"…"`/`` `…` `` names alike, except in `postgresql`'s `E'…'`; unclosed runs to the end). On `mysql`/`mariadb` also `"…"` | `?`. A one-letter prefix `E N X B` (either case) right before the quote, not preceded by a letter, digit or `_`, is dropped with it |
-| `"…"` (other databases) and `` `…` `` (same backslash rule) | copied unchanged: names |
+| `"…"` (other databases) and `` `…` `` (same backslash rule) | copied unchanged: names. On `sqlite`, `oracle` and `other`, a `"…"` is kept only when the whole run, quotes included, is a plain name closed (`^"[A-Za-z_][A-Za-z0-9_$#]{0,127}"$`), and is `?` otherwise: SQLite takes a double-quoted string as a value (SQLCipher's `PRAGMA key = "x'2DD2…'"`), and Oracle writes a password as a quoted name |
 | `$tag$…$tag$` or `$$…$$`, when the `$` does not follow a word character | `?` |
 | a number (`0x1F`, `12`, `1.5`, `.5`, `1.`, `2e-3`) whose first character does not follow a word character | `?` |
 | any run of whitespace | one space |
@@ -124,6 +124,14 @@ Scan left to right, building the output:
 A **word character** is ASCII `A-Z a-z 0-9 _ $ @ :`, so `table2`, `$1`, `@p1`
 and `:1` are kept. Then:
 
+0. A password or key written as a name, on any database: in the output, what
+   follows `IDENTIFIED BY ` (Oracle's `ALTER USER u IDENTIFIED BY pw`) and
+   `PRAGMA [schema.][hex][re]key` then `=` or `(`, each with an optional space
+   around it (SQLCipher), is `?`, whether it was a word, a `"…"` or a
+   `` `…` `` run (an unclosed one to the end), or else everything up to the
+   next space, `;`, `,`, `(` or `)`. ASCII case-insensitive, at a word
+   boundary, the keyword kept as written (`IDENTIFIED` and `PRAGMA_KEY` in
+   `queryText.js`).
 1. A parenthesised list of only placeholders (`?`, `$1`, `:name`, `@p1`),
    comma-separated with optional spaces, becomes `(?)`: `IN (1, 2, 3)` and
    `VALUES ($1, $2)` alike.

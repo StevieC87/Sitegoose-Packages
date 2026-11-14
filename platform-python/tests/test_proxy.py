@@ -137,6 +137,19 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(Collector.seen, [])
 
+    def test_a_query_no_url_can_carry_is_refused_and_never_trips_the_breaker(self):
+        # http.client would raise on these before connecting; counted as the
+        # collector failing, a few a second would stop every visitor's beacons.
+        kind, rest = self.proxy.match(self.proxy.collect_url())
+        for query in ("x=\xff", "x=\x00", "x=a b", "x=\u00e9"):
+            status, _, _ = self.proxy.handle(kind, rest, method="GET", query=query)
+            self.assertEqual(status, 400, repr(query))
+        self.assertEqual(Collector.seen, [])
+        self.assertEqual(self.proxy._failures, 0)
+        self.assertFalse(self.proxy.resting())
+        status, _, _ = self.proxy.handle(kind, rest, method="GET", query="v=1&u=%2Fa")
+        self.assertEqual(status, 202)
+
     def test_switched_off_it_answers_nothing(self):
         off = Proxy(FakeCore(self.endpoint), enabled=False)
         self.assertIsNone(off.match(off.script_url()))

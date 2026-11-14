@@ -132,7 +132,8 @@ class Firewall
                 isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '',
                 isset($_SERVER['HTTP_ACCEPT']) ? $_SERVER['HTTP_ACCEPT'] : '',
                 // Every pass the browser sent, from the raw header: $_COOKIE keeps only the first.
-                Challenge::cookieValues(isset($_SERVER['HTTP_COOKIE']) ? $_SERVER['HTTP_COOKIE'] : '')
+                Challenge::cookieValues(isset($_SERVER['HTTP_COOKIE']) ? $_SERVER['HTTP_COOKIE'] : ''),
+                isset($_SERVER['HTTP_SEC_FETCH_SITE']) ? $_SERVER['HTTP_SEC_FETCH_SITE'] : ''
             );
             $page = $decision['rule'] === 'challenge' ? $this->challengePage($ip, $method) : null;
         } catch (\Throwable $e) {
@@ -253,9 +254,8 @@ class Firewall
     // "/static%2F..%2Flogin", "/login;x.css" and "/login%3Bx.css" all count;
     // so is a script with PATH_INFO after it ("/wp-login.php/x.css" runs
     // wp-login.php; .phtml and .phar run as scripts too). A browser asks for
-    // its files with none of those. Nor is a path past the rules' 2,000
-    // characters: cut there, "/search/xxx...x.css/more" would end in .css
-    // and flood a catch-all route past the limits. Only GET and HEAD fetch a
+    // its files with none of those. Nor is a path past 2,000 characters: no
+    // asset has a name that long. Only GET and HEAD fetch a
     // file (no method given reads as GET): a form posts to a page, and
     // WooCommerce takes a login posted to any address.
     public static function isStatic($path, $method = 'GET')
@@ -308,13 +308,37 @@ class Firewall
         return self::has(self::$cloudflare, $key);
     }
 
+    // The request target as the app routes it: an absolute-form one ("GET
+    // http://host/admin", sent as if to a proxy) is routed by its path, so it
+    // is cut to "/admin"; matched as written it began "http:" and missed every
+    // rule on "/admin". Read as a server's URL parser reads it (firewall.md,
+    // "Matching"): a scheme dropped, then the authority only after "//", and
+    // a "/" in front of what is left, so "x:/admin" and "x:admin" are "/admin"
+    // too, as Puma, gunicorn and Go route them. "*" and a target already
+    // "/..." are kept as they are. Shared cases: `targets` in
+    // sdk/protocols/request-rules-cases.json.
+    public static function originForm($target)
+    {
+        $text = (string) $target;
+        if ($text === '' || $text[0] === '/' || $text === '*') {
+            return $text;
+        }
+        $rest = (string) preg_replace('~^[a-z][a-z0-9+.-]*:~i', '', $text, 1);
+        if (strncmp($rest, '//', 2) === 0) {
+            $rest = substr($rest, 2 + strcspn($rest, '/?#', 2));
+        }
+        return substr($rest, 0, 1) === '/' ? $rest : '/' . $rest;
+    }
+
     // array('action' => 'allow' | 'block' | 'monitor', 'rule' => ..., 'status' => ...).
     // $accept (the Accept header) and $pass (the __sg_pass cookie, or a list
     // of up to four from Challenge::cookieValues()) are for
     // the browser check: rule 'challenge', status 503, answered with
-    // challengePage(). Left out, no request is checked.
-    public function check($ip, $method = '', $path = '', $userAgent = '', $accept = '', $pass = '')
+    // challengePage(). Left out, no request is checked. $fetchSite: the
+    // Sec-Fetch-Site header, see crossSite().
+    public function check($ip, $method = '', $path = '', $userAgent = '', $accept = '', $pass = '', $fetchSite = '')
     {
+        $path = self::originForm($path);
         $allow = array('action' => 'allow', 'rule' => '', 'status' => 200);
         // A worker serving many requests (Octane): nothing of the last one's.
         $this->staticHit = null;
@@ -396,20 +420,26 @@ class Firewall
         // The browser check is not a mode matter: the collector sends it only
         // when the site is to be checked.
         $action = $mode === 'block' || $rule === 'challenge' ? 'block' : 'monitor';
-        // A request rule the dashboard only watches passes even in block mode;
-        // one that blocks also bans the address here, as a flood does.
         if ($matched) {
             $action = $action === 'block' && $matched['action'] === 'block' ? 'block' : 'monitor';
-            if ($action === 'block' && $matched['ban']) {
-                $this->banHere($who, $matched['ban']);
-            }
+        }
+        // What the report says: another site's page made the browser ask, so
+        // it is refused but bans no one, here or anywhere else.
+        $reported = $action;
+        if ($action === 'block' && ($rule === 'probe' || $rule === 'rate' || $matched) && self::crossSite($fetchSite)) {
+            $reported = 'monitor';
+        }
+        // A request rule the dashboard only watches passes even in block mode;
+        // one that blocks also bans the address here, as a flood does.
+        if ($matched && $reported === 'block' && $matched['ban']) {
+            $this->banHere($who, $matched['ban']);
         }
         // Asking for a secret file: banned here (with APCu); the report bans it on the site's other servers.
-        if ($rule === 'probe' && $action === 'block') {
+        if ($rule === 'probe' && $reported === 'block') {
             $this->banHere($who, $rules['probes']['ban']);
         }
         // Over the rate limit: the same, banned here only in block mode.
-        if ($rule === 'rate' && $action === 'block') {
+        if ($rule === 'rate' && $reported === 'block') {
             $this->banHere($who, isset($rules['ban']) ? $rules['ban'] : 0);
         }
         // A match that is only watched (monitor) still gets the check: firewall.md, step 8.
@@ -419,13 +449,25 @@ class Firewall
             $rule = 'challenge';
             $action = 'block';
         }
-        $this->report($event($rule, $action));
+        $this->report($event($rule, $rule === 'challenge' ? $action : $reported));
         if ($action === 'block') {
             // Turned away: nothing of it is counted after the response.
             $this->staticHit = null;
         }
         $tooMany = $rule === 'rate' || strpos($rule, 'limit:') === 0;
         return array('action' => $action, 'rule' => $rule, 'status' => $tooMany ? 429 : ($rule === 'challenge' ? 503 : 403));
+    }
+
+    // Whether Sec-Fetch-Site says another site made the browser send the
+    // request (firewall.md, "Checking a request"). Any page can make a
+    // visitor's browser ask for /.env (an <img>, a no-cors fetch, a link) or
+    // for a page 120 times a minute, from the visitor's own address: banning
+    // it would let anyone get anyone banned. A client that forges the header
+    // only gives up the ban; it is still refused.
+    public static function crossSite($fetchSite)
+    {
+        $value = strtolower(trim((string) $fetchSite));
+        return $value === 'cross-site' || $value === 'same-site';
     }
 
     // The answer to a request check() blocked, other than the browser check
@@ -481,6 +523,7 @@ class Firewall
     // shape as check().
     public function checkAddress($ip, $method = '', $path = '', $userAgent = '')
     {
+        $path = self::originForm($path);
         $allow = array('action' => 'allow', 'rule' => '', 'status' => 200);
         $rules = $this->rules();
         if (!$rules || empty($rules['enabled'])) {
@@ -673,15 +716,15 @@ class Firewall
         return array('exact' => $exact, 'prefix' => $prefix, 'ban' => isset($probes['ban']) ? max(0, (int) $probes['ban']) : 0);
     }
 
-    // The path without its query string, lower-cased, with "//" as "/".
-    // Also as the router would see it (RequestRules::routedPath(): no
-    // ";params", "." and ".." resolved, decoded once), so "/x;y/../.env" is
-    // the probe "/.env" too.
+    // The path without its query string or "#", lower-cased, with "//" as
+    // "/". Also as the router would see it (RequestRules::routedPath(): no
+    // ";params", "." and ".." resolved, decoded once, from the whole path),
+    // so "/x;y/../.env" is the probe "/.env" too.
     public static function isProbe(array $probes, $path)
     {
-        $raw = explode('?', (string) $path, 2)[0];
+        $raw = preg_split('/[?#]/', (string) $path, 2)[0];
         $plain = strtolower(preg_replace('#/{2,}#', '/', $raw));
-        $routed = RequestRules::routedPath(substr($raw, 0, RequestRules::MAX_TEXT));
+        $routed = RequestRules::routedPath($raw);
         foreach ($plain === $routed ? array($plain) : array($plain, $routed) as $text) {
             if (isset($probes['exact'][$text])) {
                 return true;

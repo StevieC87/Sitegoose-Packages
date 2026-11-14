@@ -344,7 +344,7 @@ public sealed class Platform
         try
         {
             var ip = firewall.ClientIp(remote, header);
-            decision = firewall.Check(ip, method, target, header("user-agent"), header("accept"), header("cookie"));
+            decision = firewall.Check(ip, method, target, header("user-agent"), header("accept"), header("cookie"), fetchSite: header("sec-fetch-site"));
             if (decision.Action == "block" && decision.Rule == "challenge") return firewall.ChallengePage(ip, method);
             if (decision.Action != "block") late = decision.Late;
         }
@@ -372,13 +372,18 @@ public sealed class Platform
     /// lists; fallback: until the flag is known, or with the module off).</summary>
     public bool IsEnabled(string key, string? user = null, bool fallback = false) => FlagsModule?.IsEnabled(key, user, fallback) ?? fallback;
 
-    internal MaintenanceDecision? MaintenanceResponse(string remote, Func<string, string> header, string path, string? query)
+    /// <summary>https: the request came over HTTPS to this server; a
+    /// TLS-ending proxy's X-Forwarded-Proto says so as well. Only ever used to
+    /// make the preview cookie Secure: a visitor who sends it on plain http
+    /// gets a cookie their own browser won't send back, and nothing more.</summary>
+    internal MaintenanceDecision? MaintenanceResponse(string remote, Func<string, string> header, string path, string? query, bool https = false)
     {
         var maintenance = MaintenanceModule;
         if (maintenance == null) return null;
         try
         {
-            return maintenance.Decide(ClientIp(remote, header), path, query, header("cookie"));
+            var secure = https || string.Equals((header("x-forwarded-proto") ?? "").Split(',')[0].Trim(), "https", StringComparison.OrdinalIgnoreCase);
+            return maintenance.Decide(ClientIp(remote, header), path, query, header("cookie"), secure);
         }
         catch (Exception error)
         {

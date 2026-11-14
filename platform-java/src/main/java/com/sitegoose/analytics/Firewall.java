@@ -701,32 +701,61 @@ public final class Firewall {
     }
 
     public Decision check(String ip, String method, String path, String userAgent, String accept, String cookie) {
-        return check(ip, method, path, userAgent, accept, cookie, null);
+        return check(ip, method, path, userAgent, accept, cookie, null, null);
+    }
+
+    /** As above; secFetchSite: the request's Sec-Fetch-Site header, or null. */
+    public Decision check(String ip, String method, String path, String userAgent, String accept, String cookie, String secFetchSite) {
+        return check(ip, method, path, userAgent, accept, cookie, secFetchSite, null);
+    }
+
+    Decision check(String ip, String method, String path, String userAgent, String accept, String cookie, Double nowSeconds) {
+        return check(ip, method, path, userAgent, accept, cookie, null, nowSeconds);
+    }
+
+    /**
+     * True when another site made the browser send the request (an img, a
+     * no-cors fetch, a link): it comes from the visitor's own address, so it
+     * may be refused but must never get that address banned.
+     */
+    static boolean fromAnotherSite(String secFetchSite) {
+        String value = secFetchSite == null ? "" : secFetchSite.trim();
+        return "cross-site".equalsIgnoreCase(value) || "same-site".equalsIgnoreCase(value);
     }
 
     /**
      * Allowed addresses skip every other rule. accept and cookie (the
      * request's headers) are for the browser check: rule "challenge", status
-     * 503, answered with challengePage().
+     * 503, answered with challengePage(). path: the request target, put in
+     * origin form first.
      */
-    Decision check(String ip, String method, String path, String userAgent, String accept, String cookie, Double nowSeconds) {
+    Decision check(String ip, String method, String path, String userAgent, String accept, String cookie, String secFetchSite,
+            Double nowSeconds) {
         Rules r = rules;
         if (r == null || !r.enabled) {
             return Decision.ALLOW;
         }
+        path = RequestRules.originForm(path);
+        boolean foreign = fromAnotherSite(secFetchSite);
+        String action = "block".equals(mode != null ? mode : r.mode) ? "block" : "monitor";
         Ip.Key key = Ip.key(ip);
-        if (key == null || r.allow.has(key)) {
+        if (key == null) {
+            return withoutAddress(r, ip, method, path, userAgent, action, foreign);
+        }
+        if (r.allow.has(key)) {
             return Decision.ALLOW;
         }
-        String action = "block".equals(mode != null ? mode : r.mode) ? "block" : "monitor";
+        // What the report says: "monitor" when nobody may be banned for it.
+        boolean spared = false;
         String rule = r.deny.has(key) ? "deny"
                 : r.banned.has(key) || bannedHere(ip) ? "ban"
                 : r.list.has(key) ? "list"
                 : r.shared.has(key) ? "shared" : "";
         if (rule.isEmpty() && isProbe(path, r.probes)) {
             rule = "probe";
+            spared = foreign;
             // Asking for a secret file: banned here in block mode; the report bans it on the other servers.
-            if ("block".equals(action)) {
+            if ("block".equals(action) && !foreign) {
                 banHere(ip, r.probes.ban);
             }
         }
@@ -734,10 +763,11 @@ public final class Firewall {
             RequestRules.Rule matched = RequestRules.match(r.requests, method, path, userAgent);
             if (matched != null) {
                 rule = "request:" + matched.id;
+                spared = foreign;
                 // A rule the dashboard only watches passes even in block mode;
                 // one that blocks also bans the address here, as a flood does.
                 action = "block".equals(action) && "block".equals(matched.action) ? "block" : "monitor";
-                if ("block".equals(action) && matched.ban > 0) {
+                if ("block".equals(action) && matched.ban > 0 && !foreign) {
                     banHere(ip, matched.ban);
                 }
             }
@@ -772,8 +802,9 @@ public final class Firewall {
         Late late = lateRate || lateLimits ? new Late(ip, method, path, userAgent, lateRate, lateLimits) : null;
         if (rule.isEmpty() && r.rate != null && !r.goodbots.has(key) && overRate(ip, r.rate, asset)) {
             rule = "rate";
+            spared = foreign;
             // Banned here straight away in block mode, as a probe is.
-            if ("block".equals(action)) {
+            if ("block".equals(action) && !foreign) {
                 banHere(ip, r.ban);
             }
         }
@@ -796,9 +827,33 @@ public final class Firewall {
         if (rule.isEmpty()) {
             return late == null ? Decision.ALLOW : new Decision("allow", "", 200, 0, late);
         }
-        report(event(ip, rule, action, method, path, userAgent));
+        report(event(ip, rule, spared && !"challenge".equals(rule) ? "monitor" : action, method, path, userAgent));
         return new Decision(action, rule, "rate".equals(rule) || rule.startsWith("limit:") ? 429 : "challenge".equals(rule) ? 503 : 403, window,
                 "block".equals(action) ? null : late);
+    }
+
+    /**
+     * A request whose address doesn't parse (a custom trustProxy, or a
+     * wrapper's getRemoteAddr(), gave text): no list, count or ban can name
+     * it, but what it asks for is still checked. Passing it would let any
+     * request past every rule.
+     */
+    private Decision withoutAddress(Rules r, String ip, String method, String path, String userAgent, String action, boolean foreign) {
+        String rule = "";
+        if (isProbe(path, r.probes)) {
+            rule = "probe";
+        } else {
+            RequestRules.Rule matched = RequestRules.match(r.requests, method, path, userAgent);
+            if (matched != null) {
+                rule = "request:" + matched.id;
+                action = "block".equals(action) && "block".equals(matched.action) ? "block" : "monitor";
+            }
+        }
+        if (rule.isEmpty()) {
+            return Decision.ALLOW;
+        }
+        report(event(ip, rule, foreign ? "monitor" : action, method, path, userAgent));
+        return new Decision(action, rule, 403);
     }
 
     /**

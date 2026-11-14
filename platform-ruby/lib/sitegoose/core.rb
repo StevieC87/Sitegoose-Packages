@@ -509,16 +509,29 @@ module SiteGoose
   # The characters a path may carry unencoded (RFC 3986).
   PATH_SAFE = %r{[^A-Za-z0-9/:@!$&'()*+,;=\-._~%]}.freeze
 
+  # A request line's target in origin form (firewall.md, "Matching"), read
+  # the way the server's URL parser reads one that doesn't start with "/":
+  # a scheme dropped, then, after "//", the authority up to the next "/",
+  # "?" or "#", and a "/" put in front of what is left. Puma routes
+  # "x:/admin" and "http:/admin" as /admin, so the firewall must not match
+  # "/x:/admin". "*" (OPTIONS *) stays as it is.
+  def self.origin_form(target)
+    target = text(target)
+    return target if target.start_with?("/") || target == "*"
+
+    rest = target.sub(/\A[a-zA-Z][a-zA-Z0-9+.-]*:/, "")
+    rest = rest.sub(%r{\A//[^/?#]*}, "")
+    rest.start_with?("/") ? rest : "/#{rest}"
+  end
+
   # The request target as the visitor sent it, query string and all, which
   # is what the request rules match (sdk/protocols/firewall.md). Rack's
   # PATH_INFO is not decoded, and Puma, Unicorn and WEBrick keep the target
-  # itself as REQUEST_URI, so it is taken as it came; an absolute-form target
-  # (a proxy request) loses its scheme and host.
+  # itself as REQUEST_URI, so it is taken as it came, in origin form.
   def self.request_target(env)
     raw = env["REQUEST_URI"]
     if raw.is_a?(String) && !raw.empty?
-      target = raw.sub(%r{\A[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*}, "")
-      target = "/#{target}" unless target.start_with?("/") || target.start_with?("*")
+      target = origin_form(raw)
     else
       target = "#{env['SCRIPT_NAME']}#{env['PATH_INFO']}"
       target = target.b.gsub(PATH_SAFE) { |c| format("%%%02X", c.ord) }
@@ -526,6 +539,37 @@ module SiteGoose
     query = env["QUERY_STRING"].to_s
     target = "#{target}?#{query}" if !query.empty? && !target.include?("?")
     text(target)
+  end
+
+  # The path the app routes on (SCRIPT_NAME + PATH_INFO) when it isn't the
+  # path of target (request_target's), else nil. A server whose parser
+  # reads a target in a way origin_form doesn't foresee then still has its
+  # path checked: the rules match either.
+  def self.routed_also(env, target)
+    return nil unless env["REQUEST_URI"].is_a?(String) && !env["REQUEST_URI"].empty?
+
+    routed = "#{env['SCRIPT_NAME']}#{env['PATH_INFO']}"
+    routed.empty? || routed == target.split(/[?#]/, 2)[0] ? nil : text(routed)
+  end
+
+  # What a POST asks to be routed as, for the request rules' methods: the
+  # X-HTTP-Method-Override header, and a _method in the query string or a
+  # form the app already parsed. Rack::MethodOverride, after us, reads the
+  # header and the posted form; the body is never read here, so a _method
+  # posted in it is matched as POST only.
+  def self.method_overrides(env, headers)
+    return [] unless env["REQUEST_METHOD"].to_s.upcase == "POST"
+
+    found = []
+    given = header(headers, "x-http-method-override")
+    found << given unless given.empty?
+    env["QUERY_STRING"].to_s.split("&").each do |pair|
+      name, value = pair.split("=", 2)
+      found << RequestRules.decode_once(value.to_s) if RequestRules.decode_once(name.to_s) == "_method"
+    end
+    form = env["rack.request.form_hash"]
+    found << form["_method"] if form.is_a?(Hash) && form["_method"].is_a?(String)
+    found
   end
 
   # A path with its percent-escapes decoded once, as text (for display and

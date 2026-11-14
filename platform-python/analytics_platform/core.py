@@ -23,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.8"
+VERSION = "0.3.10"
 TIMEOUT = 5
 MIN_SYNC = 30
 RETRY = 60
@@ -445,6 +445,24 @@ def header(headers, name):
 
 # The characters a path may carry unencoded (RFC 3986), which quote() leaves alone.
 _PATH_SAFE = "/:@!$&'()*+,;=-._~"
+
+
+# A scheme, then the authority only when "//" follows it (firewall.md, "Matching").
+_ABSOLUTE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:(?://[^/?#]*)?")
+
+
+def origin_form(target):
+    """The request target as the app routes it: an absolute-form one ("GET
+    http://host/admin", sent as if to a proxy) is routed by its path, so it is
+    cut to "/admin"; matched as written it began "http:" and missed every rule
+    on "/admin". gunicorn's urlsplit reads "x:/admin" and "x:admin" as
+    "/admin" too, with no "//" at all, so the scheme goes whatever follows it.
+    "*" and a target already "/..." are kept as they are."""
+    text = str(target or "")
+    if not text or text.startswith("/") or text == "*":
+        return text
+    rest = _ABSOLUTE.sub("", text, count=1)
+    return rest if rest.startswith("/") else "/" + rest
 
 
 def request_target(path, query="", raw=None):

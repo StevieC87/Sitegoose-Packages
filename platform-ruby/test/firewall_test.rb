@@ -95,6 +95,37 @@ class ProbesAndRequestRulesTest < Minitest::Test
   end
 end
 
+# firewall.md, "Checking a request": another site can make a visitor's
+# browser ask for /.env, or flood a page, from the visitor's own address.
+class CrossSiteTest < Minitest::Test
+  RULES = { "mode" => "block", "rate" => { "limit" => 2, "window" => 60 }, "ban" => { "seconds" => 600 },
+            "probes" => { "exact" => ["/.env"], "ban" => 600 },
+            "requests" => { "rules" => [{ "id" => "stop", "action" => "block", "ban" => 60, "path" => { "exact" => ["/s"] } }] } }.freeze
+
+  def test_refused_but_never_banned_and_reported_as_watched
+    %w[cross-site Same-Site].each do |site|
+      w = wall(RULES)
+      assert_equal [403, "probe"], w.check("203.0.113.9", "GET", "/.env", fetch_site: site).values_at(:status, :rule)
+      assert_equal [403, "request:stop"], w.check("203.0.113.9", "GET", "/s", fetch_site: site).values_at(:status, :rule)
+      assert_equal ["", "", "rate"], 3.times.map { w.check("203.0.113.9", "GET", "/", fetch_site: site)[:rule] }
+      assert_equal "block", w.check("203.0.113.9", "GET", "/", fetch_site: site)[:action], "still refused"
+      assert_empty w.bans, site
+      assert_equal "rate", w.check("203.0.113.9", "GET", "/x", fetch_site: site)[:rule], "not banned: only over the rate"
+      assert_equal(%w[monitor], w.queue.values.map { |e| e["action"] }.uniq, site)
+      assert_equal %w[probe rate request:stop], w.queue.values.map { |e| e["rule"] }.uniq.sort
+    end
+  end
+
+  def test_the_sites_own_requests_are_banned_as_before
+    ["same-origin", "none", ""].each do |site|
+      w = wall(RULES)
+      assert_equal "probe", w.check("203.0.113.9", "GET", "/.env", fetch_site: site)[:rule]
+      assert_equal "ban", w.check("203.0.113.9", "GET", "/")[:rule], site
+      assert_equal "block", w.queue.values.find { |e| e["rule"] == "probe" }["action"]
+    end
+  end
+end
+
 class LoginFailedTest < Minitest::Test
   def test_past_the_limit_the_address_is_banned_and_every_failure_reported
     w = wall({ "mode" => "block", "login" => { "limit" => 3, "window" => 3600, "ban" => 600 } })

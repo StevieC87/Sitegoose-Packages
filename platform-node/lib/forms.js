@@ -7,17 +7,49 @@
 // made, the form is accepted (checked: false).
 "use strict";
 
-const PRIVATE_FIELD = /pass|card|cvc|cvv|secret|token|ssn|iban|csrf|analytics-shield/i;
+// Fields never sent, by name. protectForm() hands over the whole body, so
+// whoever adds it to a sign-up or a checkout route relies on this list: keep
+// it wide, and the same as every package's (`pass` also covers passwd and
+// passport; `cc-number`, `cc-csc` and `cc-exp` are the autocomplete names).
+const PRIVATE_FIELD = /pass|pwd|card|cc[-_]?(num|no|number|csc|exp)|cvc|cvv|cvn|expiry|exp[-_]?(month|year|date)|secret|token|\bauth\b|authoriz|api[-_]?key|otp|mfa|2fa|\bpin\b|security[-_]?code|signature|private|ssn|sin\b|nino|tax[-_]?id|iban|bic|swift|routing|account[-_]?(no|num|number)|dob|birth|licen[cs]e|csrf|nonce|analytics-shield/i;
+// A card number in a field nobody thought to name "card" still must not be
+// sent, so values are checked too: 13-19 digits that pass Luhn are taken out
+// of the text and the rest of the message is kept, so spam is still judged.
+const DIGITS = /\b(?:\d[ -]?){12,18}\d\b/g;
 const MAX_FIELDS = 50;
 const ANSWER = "analytics-shield";
+
+// Replaces anything shaped like a card number, and passing Luhn, with
+// [removed]. Luhn is what keeps order numbers and phone numbers readable.
+function withoutCardNumbers(text) {
+  return String(text).replace(DIGITS, (match) => {
+    const digits = match.replace(/\D/g, "");
+    let sum = 0;
+    let alt = false;
+    for (let i = digits.length - 1; i >= 0; i--) {
+      let n = Number(digits[i]);
+      if (alt) {
+        n *= 2;
+        if (n > 9) n -= 9;
+      }
+      sum += n;
+      alt = !alt;
+    }
+    return sum % 10 === 0 ? "[removed]" : match;
+  });
+}
 
 function plainFields(body) {
   const out = {};
   if (!body || typeof body !== "object") return out;
   for (const [label, value] of Object.entries(body).slice(0, MAX_FIELDS)) {
     if (PRIVATE_FIELD.test(label)) continue;
-    if (typeof value === "string") out[label] = value.slice(0, 2000);
-    else if (Array.isArray(value)) out[label] = value.filter((v) => typeof v === "string").join(", ").slice(0, 2000);
+    let text;
+    if (typeof value === "string") text = value;
+    else if (typeof value === "number" && Number.isFinite(value)) text = String(value);
+    else if (Array.isArray(value)) text = value.filter((v) => typeof v === "string").join(", ");
+    else continue;
+    out[label.slice(0, 100)] = withoutCardNumbers(text.slice(0, 2000));
   }
   return out;
 }
@@ -78,4 +110,4 @@ function createForms(core, { clientIp } = {}) {
   return { checkForm, protectForm };
 }
 
-module.exports = { createForms, plainFields };
+module.exports = { createForms, plainFields, withoutCardNumbers };

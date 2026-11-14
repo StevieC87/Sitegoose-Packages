@@ -427,7 +427,9 @@ internal sealed class Firewall
             }
             else
             {
-                var name = limit.Match.Id + "|" + counter + (limit.EachPath ? "|" + request.RoutedPath : "");
+                // Pages past 2,000 characters share a count: a key per long
+                // path would let one address fill the table with 8 KB keys.
+                var name = limit.Match.Id + "|" + counter + (limit.EachPath ? "|" + J.Clip(request.RoutedPath, RequestRules.MaxText) : "");
                 var table = limit.EachPath ? pathCounts : limitCounts;
                 var counted = peek ? table.Peek(name, window) : table.Hit(name, window, limit.Window, now);
                 if (counted == null) continue; // full of live counts: this one isn't counted here
@@ -644,8 +646,8 @@ internal sealed class Firewall
 
     /// <summary>Allowed addresses skip every other rule. accept and cookie (the
     /// request's headers) are for the browser check: rule "challenge", status
-    /// 503, answered with ChallengePage().</summary>
-    public FirewallDecision Check(string ip, string? method = "", string? path = "", string? userAgent = "", string? accept = "", string? cookie = "", double? now = null)
+    /// 503, answered with ChallengePage(). fetchSite: the Sec-Fetch-Site header.</summary>
+    public FirewallDecision Check(string ip, string? method = "", string? path = "", string? userAgent = "", string? accept = "", string? cookie = "", double? now = null, string? fetchSite = null)
     {
         var rules = RulesNow;
         if (rules == null || !rules.Enabled) return FirewallDecision.Allow;
@@ -657,6 +659,12 @@ internal sealed class Firewall
         ip = Ip.Display(Ip.Parse(ip));
         var at = now ?? J.UnixNow();
         var action = (Mode ?? rules.Mode) == "block" ? "block" : "monitor";
+        // Another site made the browser send it (an <img src="/.env">, a
+        // no-cors fetch): refused as before, but its address is the visitor's
+        // own, so it bans no one here and is reported as only watched, so the
+        // collector bans no one elsewhere either (firewall.md, 'Checking a request').
+        var fetch = (fetchSite ?? "").Trim().ToLowerInvariant();
+        var otherSite = fetch == "cross-site" || fetch == "same-site";
         var rule = rules.Deny.Has(key) ? "deny"
             : rules.Banned.Has(key) || BannedHere(counter) ? "ban"
             : rules.List.Has(key) ? "list"
@@ -665,7 +673,7 @@ internal sealed class Firewall
         {
             rule = "probe";
             // Asking for a secret file: banned here in block mode; the report bans it on the other servers.
-            if (action == "block") BanHere(counter, rules.Probes!.Ban);
+            if (action == "block" && !otherSite) BanHere(counter, rules.Probes!.Ban);
         }
         if (rule.Length == 0)
         {
@@ -676,7 +684,7 @@ internal sealed class Firewall
                 // A rule the dashboard only watches passes even in block mode;
                 // one that blocks also bans the address here, as a flood does.
                 action = action == "block" && matched.Action == "block" ? "block" : "monitor";
-                if (action == "block" && matched.Ban > 0) BanHere(counter, matched.Ban);
+                if (action == "block" && matched.Ban > 0 && !otherSite) BanHere(counter, matched.Ban);
             }
         }
         // Step 6, page limits. A limit only watched is reported and the check
@@ -713,11 +721,11 @@ internal sealed class Firewall
         {
             rule = "rate";
             // Banned here straight away in block mode, as a probe is.
-            if (action == "block") BanHere(counter, rules.Ban);
+            if (action == "block" && !otherSite) BanHere(counter, rules.Ban);
         }
         var m = J.Clip(method ?? "", 10);
         var p = path ?? "";
-        var q = p.IndexOf('?');
+        var q = p.IndexOfAny(new[] { '?', '#' });
         p = J.Clip(q >= 0 ? p.Substring(0, q) : p, 300);
         var ua = J.Clip(userAgent ?? "", 300);
         // Not a mode matter: the collector only sends `challenge` when the site
@@ -740,7 +748,8 @@ internal sealed class Firewall
             if (rule.Length == 0) return new FirewallDecision("monitor", "limit:" + watched.Match.Id, 429, watched.Window) { Late = late };
         }
         if (rule.Length == 0) return late == null ? FirewallDecision.Allow : new FirewallDecision("allow", "", 200) { Late = late };
-        Report(ip, rule, action, m, p, ua);
+        var banning = rule == "probe" || rule == "rate" || rule.StartsWith("request:", StringComparison.Ordinal);
+        Report(ip, rule, otherSite && banning ? "monitor" : action, m, p, ua);
         return new FirewallDecision(action, rule, rule == "rate" || rule.StartsWith("limit:", StringComparison.Ordinal) ? 429 : rule == "challenge" ? 503 : 403, window) { Late = late };
     }
 

@@ -12,7 +12,7 @@ namespace AnalyticsPlatform;
 
 class Core
 {
-    const VERSION = '0.3.8';
+    const VERSION = '0.3.9';
     const TIMEOUT = 4;
     const MIN_SYNC = 30;
     const RETRY = 60;
@@ -46,20 +46,28 @@ class Core
     // Appended to the User-Agent, e.g. " (no-rate)" when the firewall can't count.
     public $features = '';
     private $dir;
-    private $legacyDir = '';
+    private $base;
+    // Whether the storage is the default one under the system temp folder,
+    // which every local user can write to.
+    private $shared = false;
+    private $trusted = false;
+    private $legacyDirs = array();
     private $switches = null;
     private $loaded = array();
     private $deadline = null;
 
     // Options: site_id, secret, endpoint (required); storage (a writable
-    // directory; default the system temp directory); platform (for the
-    // dashboard, default 'php').
+    // directory; default a folder of this user's in the system temp
+    // directory, see tempStorage()); platform (for the dashboard, default
+    // 'php'); public_endpoint (true: the endpoint is only called when it is
+    // https on a public address, see Proxy::publicTarget()).
     public function __construct(array $options)
     {
-        $this->options = $options + array(
-            'storage' => sys_get_temp_dir() . '/analytics-firewall',
-            'platform' => 'php',
-        );
+        $this->options = $options + array('platform' => 'php');
+        if (!isset($this->options['storage']) || $this->options['storage'] === '') {
+            $this->options['storage'] = self::tempStorage();
+            $this->shared = true;
+        }
         $id = preg_replace('/[^a-f0-9]/i', '', (string) $this->opt('site_id'));
         // The folder may not be named after the site id alone. On WordPress the
         // storage lives under wp-content, which the web server serves, and the
@@ -71,15 +79,93 @@ class Core
         // secret never leaves the server, so a name derived from it can't be
         // guessed from outside.
         $base = rtrim($this->options['storage'], '/\\');
-        $this->dir = $base . '/' . ($id === '' ? '' : $id . '-' . substr(hash('sha256', $id . '|' . (string) $this->opt('secret')), 0, 16));
+        $this->base = $base;
         // The folder itself, for a caller that has it but not the secret
         // (the WordPress plugin's px.php, which checks the firewall's rules).
         if (is_string($this->opt('dir')) && $this->opt('dir') !== '') {
             $this->dir = rtrim($this->opt('dir'), '/\\');
+            $this->shared = false;
             return;
         }
-        // Where it used to be, when the name was guessable.
-        $this->legacyDir = $id === '' ? '' : $base . '/' . $id;
+        // Without the secret a name is no secret at all (anyone can work it
+        // out from the site id), and with nothing to send nothing need be
+        // kept: no folder until the package is configured.
+        if (!$this->configured()) {
+            $this->dir = '';
+            return;
+        }
+        $this->dir = $base . '/' . $id . '-' . substr(hash('sha256', $id . '|' . (string) $this->opt('secret')), 0, 16);
+        // Where it used to be: named after the site id alone, or from an
+        // empty secret (older versions kept spools before one was set).
+        $this->legacyDirs = array($base . '/' . $id, $base . '/' . $id . '-' . substr(hash('sha256', $id . '|'), 0, 16));
+    }
+
+    // The default storage. Rules and switches are run as PHP from it, so no
+    // other local user may be able to write there, or even list it: the
+    // shared temp folder's "analytics-firewall", as before, only when it is
+    // already this user's own (a host's other users can't have made it first
+    // to swap a site's folder for theirs); else one named after this user,
+    // which ensureDir() creates 0700 and checks the same way.
+    private static function tempStorage()
+    {
+        $tmp = rtrim(sys_get_temp_dir(), '/\\');
+        if (self::ownFolder($tmp . '/analytics-firewall', false)) {
+            return $tmp . '/analytics-firewall';
+        }
+        $uid = self::uid();
+        if ($uid === null) {
+            $uid = function_exists('getmyuid') ? (int) getmyuid() : 0;
+        }
+        return $tmp . '/analytics-firewall-' . $uid;
+    }
+
+    // The user PHP runs as, or null where it can't be told (Windows, or no posix).
+    private static function uid()
+    {
+        return DIRECTORY_SEPARATOR !== '\\' && function_exists('posix_geteuid') ? (int) posix_geteuid() : null;
+    }
+
+    // Whether $path is a folder of this user's that no one else can write
+    // to: not a link, owned by the user PHP runs as, and with no write for
+    // group or others. With $close, a folder of ours that others could read
+    // or write (0775, as older versions made it) is closed to 0700 first.
+    // Where the owner can't be told (Windows, no posix), only the link and,
+    // off Windows, the write bits.
+    private static function ownFolder($path, $close = true)
+    {
+        clearstatcache(true, $path);
+        if (@is_link($path) || !@is_dir($path)) {
+            return false;
+        }
+        if (DIRECTORY_SEPARATOR === '\\') {
+            return true;
+        }
+        $uid = self::uid();
+        $stat = @stat($path);
+        if (!$stat || ($uid !== null && $stat['uid'] !== $uid)) {
+            return false;
+        }
+        if ($close && ($stat['mode'] & 0077) && @chmod($path, 0700)) {
+            clearstatcache(true, $path);
+            $stat = @stat($path);
+        }
+        return $stat && ($stat['mode'] & 0022) === 0;
+    }
+
+    // Whether $file may be included: a plain file, not a link, of this
+    // user's, that no one else can write to.
+    private static function ownFile($file)
+    {
+        clearstatcache(true, $file);
+        if (@is_link($file) || !@is_file($file)) {
+            return false;
+        }
+        if (DIRECTORY_SEPARATOR === '\\') {
+            return true;
+        }
+        $uid = self::uid();
+        $stat = @stat($file);
+        return $stat && ($uid === null || $stat['uid'] === $uid) && ($stat['mode'] & 0022) === 0;
     }
 
     // This site's check-in, on the switches request: server_name (default the
@@ -159,50 +245,110 @@ class Core
         return preg_match('/^[a-f0-9]{24}$/Di', (string) $this->opt('site_id')) && $this->opt('secret') && $this->opt('endpoint');
     }
 
+    // The folder's path ('' until the package is configured), whether or not
+    // it exists yet.
     public function dir()
     {
         return $this->dir;
     }
 
+    // The folder when it exists and is safe to read from and write to (see
+    // ownFolder(); the default storage's parent too), else ''.
+    public function trustedDir()
+    {
+        if ($this->dir === '') {
+            return '';
+        }
+        clearstatcache(true, $this->dir);
+        if ($this->trusted && @is_dir($this->dir)) {
+            return $this->dir;
+        }
+        $this->trusted = ($this->shared ? self::ownFolder($this->base) : true) && self::ownFolder($this->dir);
+        return $this->trusted ? $this->dir : '';
+    }
+
+    // Creates the folder, 0700, when it isn't there. False when there is no
+    // folder to use: not configured, not writable, or one this user doesn't
+    // own or others can write to, which is never used (the default storage
+    // is under the shared temp folder, where another user can make it first).
     public function ensureDir()
     {
-        if (is_dir($this->dir)) {
-            return true;
+        if ($this->dir === '') {
+            return false;
         }
-        if (!@mkdir($this->dir, 0775, true) && !is_dir($this->dir)) {
+        clearstatcache(true, $this->dir);
+        if (@is_link($this->dir)) {
+            return false;
+        }
+        // The default storage's own folder first: under the shared temp
+        // folder, nothing is made inside one that isn't ours alone.
+        if ($this->shared && !@is_dir($this->base) && !@is_link($this->base)) {
+            @mkdir($this->base, 0700, true);
+        }
+        if ($this->shared && !self::ownFolder($this->base)) {
+            return false;
+        }
+        $made = false;
+        if (!@is_dir($this->dir)) {
+            if (!@mkdir($this->dir, 0700, true) && !@is_dir($this->dir)) {
+                return false;
+            }
+            $made = true;
+        }
+        if ($this->trustedDir() === '') {
             return false;
         }
         // Only on the one request that creates the new folder, so this costs
         // nothing afterwards.
-        $this->removeLegacy();
-        @file_put_contents($this->dir . '/index.html', '');
-        @file_put_contents($this->dir . '/.htaccess', "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n");
+        if ($made) {
+            $this->removeLegacy();
+            @file_put_contents($this->dir . '/index.html', '');
+            @file_put_contents($this->dir . '/.htaccess', "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n");
+        }
         return true;
     }
 
-    // The folder from before the name was unguessable held the same events,
-    // crawler hits and file list, at a web address anyone could work out, so it
-    // is emptied rather than left behind. It only ever holds flat files.
+    // The folders from before the name was unguessable held the same events,
+    // crawler hits and file list, at a web address anyone could work out, so
+    // they are emptied rather than left behind. They only ever held flat
+    // files. One that is a link, or another user's, is left alone: removing
+    // what is in it would remove whatever it points at.
     private function removeLegacy()
     {
-        if ($this->legacyDir === '' || $this->legacyDir === $this->dir || !is_dir($this->legacyDir)) {
-            return;
-        }
-        foreach (glob($this->legacyDir . '/*') ?: array() as $path) {
-            if (is_file($path)) {
-                @unlink($path);
+        $uid = self::uid();
+        foreach ($this->legacyDirs as $legacy) {
+            clearstatcache(true, $legacy);
+            if ($legacy === $this->dir || @is_link($legacy) || !@is_dir($legacy)) {
+                continue;
             }
+            $stat = @stat($legacy);
+            if (!$stat || ($uid !== null && $stat['uid'] !== $uid)) {
+                continue;
+            }
+            foreach (glob($legacy . '/{,.}*', GLOB_BRACE | GLOB_NOSORT) ?: array() as $path) {
+                if (!@is_link($path) && @is_file($path)) {
+                    @unlink($path);
+                }
+            }
+            @rmdir($legacy);
         }
-        @rmdir($this->legacyDir);
     }
 
     // Writes a value as a PHP file, atomically, so OPcache can keep it.
     public function writePhp($name, $value)
     {
+        if ($this->dir === '') {
+            return false;
+        }
         $file = $this->dir . '/' . $name;
         $tmp = $file . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
         $php = "<?php\n// Written by the analytics package; rewritten on every sync.\nreturn " . var_export($value, true) . ";\n";
-        if (@file_put_contents($tmp, $php, LOCK_EX) === false || !@rename($tmp, $file)) {
+        // 0600: the switches hold maintenance mode's bypass code.
+        $written = @file_put_contents($tmp, $php, LOCK_EX) !== false;
+        if ($written) {
+            @chmod($tmp, 0600);
+        }
+        if (!$written || !@rename($tmp, $file)) {
             @unlink($tmp);
             return false;
         }
@@ -212,10 +358,15 @@ class Core
         return true;
     }
 
+    // Included only from a folder and a file of this user's that no one else
+    // can write to: anything else could be anyone's code.
     public function readPhp($name)
     {
+        if ($this->trustedDir() === '') {
+            return null;
+        }
         $file = $this->dir . '/' . $name;
-        return is_file($file) ? @include $file : null;
+        return self::ownFile($file) ? @include $file : null;
     }
 
     // ---- Module switches ----------------------------------------------------
@@ -328,6 +479,9 @@ class Core
     // False when the spool is full (more than $max bytes) or can't be written.
     public function append($name, array $row, $max)
     {
+        if ($this->trustedDir() === '') {
+            return false;
+        }
         $file = $this->dir . '/' . $name . '.jsonl';
         $line = json_encode($row, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
         if ($line === false) {
@@ -367,6 +521,9 @@ class Core
                 continue;
             }
             $size = $here['size'];
+            if ($size === 0) {
+                @chmod($file, 0600);
+            }
             $out = $size > 0 && (@fseek($handle, -1, SEEK_END) !== 0 || @fread($handle, 1) !== "\n") ? "\n" . $text : $text;
             $ok = $max === null || $size + strlen($out) <= $max;
             if ($ok) {
@@ -397,6 +554,9 @@ class Core
     // Whether anything is waiting to be sent, new or to be resent.
     public function waiting($name)
     {
+        if ($this->dir === '') {
+            return false;
+        }
         clearstatcache();
         $base = $this->dir . '/' . $name;
         return is_file($base . '.jsonl') || is_file($base . '.retry.jsonl')
@@ -467,7 +627,8 @@ class Core
     public function post($name, $path, array $body, $auth = 'body')
     {
         $res = $this->http('POST', $path, $body, array(), $auth);
-        if (self::retryable($res['status']) && $this->ensureDir()) {
+        // Not configured: nothing was sent, and nothing is kept either.
+        if ($this->configured() && self::retryable($res['status']) && $this->ensureDir()) {
             $this->append($name . '.retry', array('path' => $path, 'auth' => $auth, 'body' => $body), self::RETRY_MAX);
         }
         return $res;
@@ -585,11 +746,21 @@ class Core
         }
         $headers[] = 'User-Agent: analytics-platform-' . $this->options['platform'] . '/' . self::VERSION . $this->features;
         $url = rtrim($this->opt('endpoint'), '/') . $path;
+        // An endpoint the server's owner may not have chosen (see the
+        // option): only an https one on public addresses, and only those.
+        $target = null;
+        if ($this->opt('public_endpoint')) {
+            $target = Proxy::publicTarget($url);
+            if ($target === null) {
+                return $result;
+            }
+        }
         if (function_exists('curl_init')) {
             $ch = curl_init($url);
             curl_setopt_array($ch, array(
                 CURLOPT_CUSTOMREQUEST => $method,
                 CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => false,
                 CURLOPT_TIMEOUT_MS => (int) ceil($timeout * 1000),
                 CURLOPT_CONNECTTIMEOUT_MS => (int) ceil($timeout * 1000),
                 CURLOPT_NOSIGNAL => true,
@@ -602,6 +773,9 @@ class Core
                     return strlen($line);
                 },
             ));
+            if ($target !== null) {
+                curl_setopt_array($ch, Proxy::curlPinned($target));
+            }
             if ($body !== null) {
                 curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
             }
@@ -611,13 +785,19 @@ class Core
             curl_close($ch);
             return $result;
         }
+        $ssl = array();
+        if ($target !== null) {
+            list($url, $ssl) = Proxy::streamPinned($url, $target, $headers);
+        }
+        // A redirect isn't followed: the secret would go with it.
         $context = stream_context_create(array('http' => array(
             'method' => $method,
             'header' => implode("\r\n", $headers),
             'content' => $body === null ? '' : $body,
             'timeout' => $timeout,
             'ignore_errors' => true,
-        )));
+            'follow_location' => 0,
+        ), 'ssl' => $ssl));
         $response = @file_get_contents($url, false, $context);
         // PHP 8.4 added http_get_last_response_headers(); 8.5 deprecated the
         // $http_response_header variable this fell back on. The old name is

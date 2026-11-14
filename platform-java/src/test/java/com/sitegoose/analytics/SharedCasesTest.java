@@ -82,6 +82,13 @@ class SharedCasesTest {
     }
 
     @Test
+    void requestTargetsInOriginForm() {
+        for (Map<String, Object> c : Fixtures.rows(RULES.get("targets"))) {
+            assertEquals(c.get("origin"), RequestRules.originForm((String) c.get("target")), (String) c.get("target"));
+        }
+    }
+
+    @Test
     void requestRulePatterns() {
         Map<String, Object> patterns = Json.map(RULES.get("patterns"));
         for (Object p : Json.list(patterns.get("refused"))) {

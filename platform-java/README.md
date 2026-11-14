@@ -34,13 +34,17 @@ analytics.endpoint=https://collect.example.com
 ```
 
 Behind a proxy or load balancer, the visitor's address is usually Spring
-Boot's business already: with `server.forward-headers-strategy=native` or
-`framework`, or on a cloud platform where Spring Boot turns it on by itself
-(Kubernetes, Cloud Foundry, Heroku, Azure App Service), the starter uses the
-address Spring Boot works out and **ignores `analytics.trust-proxy`** (with a
-warning), because what's left in `X-Forwarded-For` then is whatever the
-visitor wrote. Set `analytics.trust-proxy=1` only when Spring Boot doesn't
-read the proxy headers itself (see "The visitor's address").
+Boot's business already: with `server.forward-headers-strategy=native`, or on
+a cloud platform where Spring Boot turns it on by itself (Kubernetes, Cloud
+Foundry, Heroku, Azure App Service), the starter uses the address the server
+works out and **ignores `analytics.trust-proxy`** (with a warning), because
+what's left in `X-Forwarded-For` then is whatever the visitor wrote. With
+`framework`, Spring's `ForwardedHeaderFilter` believes the leftmost
+`X-Forwarded-For` or `Forwarded` entry, which is the visitor's own writing, so
+the filter reads the request from under it and counts from the right instead:
+one proxy, or as many as `analytics.trust-proxy` says. Set
+`analytics.trust-proxy=1` when Spring Boot doesn't read the proxy headers
+itself (see "The visitor's address").
 
 (Or only environment variables: `ANALYTICS_SITE_ID`, `ANALYTICS_SITE_SECRET`,
 `ANALYTICS_ENDPOINT`, `ANALYTICS_TRUST_PROXY`.)
@@ -324,6 +328,8 @@ so `trustProxy` would believe a forged address (and let anyone get someone
 else banned). The filter notices Tomcat's valve and filter (they mark the
 request) and the Spring Boot starter its own settings, and use the
 container's address then; it can't tell for Jetty, Undertow or WildFly.
+Spring's `ForwardedHeaderFilter` is the exception: the filter reads the
+request from under it, so there `trustProxy` applies as usual.
 
 **Rate limit with several instances:** each JVM counts on its own. For one
 count, pass a shared counter:

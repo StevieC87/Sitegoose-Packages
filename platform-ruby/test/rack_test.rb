@@ -28,6 +28,27 @@ class RackMiddlewareTest < Minitest::Test
     assert_equal [["GPTBot", "/pricing", 403]], made.module("crawlers").rows.keys.map { |k| k[1..3] }
   end
 
+  # What the firewall reads off the env: the target in origin form, the
+  # method a POST asks for, and Sec-Fetch-Site.
+  def test_the_firewall_sees_the_request_as_the_app_routes_it
+    made = platform
+    made.firewall.rules = made.firewall.compile({ "v" => 1, "enabled" => true, "mode" => "block",
+                                                  "probes" => { "exact" => ["/.env"], "ban" => 600 },
+                                                  "requests" => { "rules" => [
+                                                    { "id" => "admin", "action" => "block", "path" => { "prefix" => ["/admin"] } },
+                                                    { "id" => "delete", "action" => "block", "methods" => ["DELETE"], "path" => { "prefix" => ["/api/"] } }
+                                                  ] } })
+    app = SiteGoose::Middleware.new(SITE, made)
+    assert_equal 403, app.call(rack_env(path: "/admin").merge("REQUEST_URI" => "x:/admin"))[0]
+    assert_equal 200, app.call(rack_env(method: "POST", path: "/api/users/1"))[0]
+    assert_equal 403, app.call(rack_env(method: "POST", path: "/api/users/1", x_http_method_override: "DELETE"))[0]
+    assert_equal 403, app.call(rack_env(method: "POST", path: "/api/users/1", query: "_method=delete"))[0]
+    assert_equal 403, app.call(rack_env(path: "/.env", remote: "203.0.113.77", sec_fetch_site: "cross-site"))[0]
+    assert_empty made.firewall.bans, "another site's request bans no one"
+    assert_equal 403, app.call(rack_env(path: "/.env", remote: "203.0.113.77"))[0]
+    assert_equal 1, made.firewall.bans.size
+  end
+
   def test_rails_and_sinatra_route_names
     rails = { "action_dispatch.route_uri_pattern" => "/users/:id(.:format)" }
     assert_equal "/users/:id", SiteGoose.route_of(rails, "/users/7")

@@ -210,6 +210,10 @@ public class ModulesTests
         Assert.Contains("Back at &lt;5&gt;", System.Text.Encoding.UTF8.GetString(page.Body));
         Assert.Null(platform.MaintenanceResponse("198.51.100.1", NoHeader, "/", ""));
         Assert.StartsWith("site_preview=letmein;", platform.MaintenanceResponse("203.0.113.9", NoHeader, "/", "?site_preview=letmein")!.RememberCookie);
+        // The cookie holds the code: Secure on https, so a plain-http request never carries it.
+        Assert.DoesNotContain("Secure", platform.MaintenanceResponse("203.0.113.9", NoHeader, "/", "?site_preview=letmein")!.RememberCookie);
+        Assert.EndsWith("; Secure", platform.MaintenanceResponse("203.0.113.9", NoHeader, "/", "?site_preview=letmein", https: true)!.RememberCookie);
+        Assert.EndsWith("; Secure", platform.MaintenanceResponse("203.0.113.9", n => n == "x-forwarded-proto" ? "https" : "", "/", "?site_preview=letmein")!.RememberCookie);
         Assert.Null(platform.MaintenanceResponse("203.0.113.9", n => n == "cookie" ? "site_preview=letmein" : "", "/", ""));
         await platform.CloseAsync();
     }

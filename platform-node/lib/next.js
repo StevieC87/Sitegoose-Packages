@@ -13,7 +13,7 @@
 const { createCore, disconnected } = require("./core.js");
 const { parseIp, IpSet, hop, counterKey, makeRoom } = require("./ip.js");
 const { fromCloudflare, onWorkers } = require("./cloudflare.js");
-const { createLocalBans, compileProbes, isProbe, isStatic } = require("./bans.js");
+const { createLocalBans, compileProbes, isProbe, isStatic, sentForAnotherSite, bansOnReport } = require("./bans.js");
 const { compileRequestRules, matchRequest, prepare, compileLimits, matchLimits } = require("./requestRules.js");
 const { compileChallenge, createSigner, hasPass, passFor, asksForPage, exempted, challengePage } = require("./challenge.js");
 
@@ -267,6 +267,8 @@ function createNextFirewall(options = {}) {
       if (!address || current.allow.has(address)) return undefined;
       const mode = options.mode === "block" || options.mode === "monitor" ? options.mode : current.mode;
       const action = mode === "block" ? "block" : "monitor";
+      // Another site made the browser send it: refused, but no one is banned (bans.js).
+      const mayBan = !sentForAnotherSite(headerOf(request, "sec-fetch-site"));
       // A request rule may only watch, even when the site blocks.
       let effective = action;
       const path = request.nextUrl?.pathname || new URL(request.url).pathname;
@@ -278,7 +280,7 @@ function createNextFirewall(options = {}) {
           : current.list.has(address) ? "list" : current.shared.has(address) ? "shared" : "";
       if (!rule && isProbe(path, current.probes)) {
         rule = "probe";
-        if (action === "block") local.ban(ip, current.probes.ban);
+        if (action === "block" && mayBan) local.ban(ip, current.probes.ban);
       }
       // Prepared once (decoded, routed) for the request rules and the page limits both.
       const prepared = !rule && (current.requests.length || current.limits.rules.length)
@@ -288,7 +290,7 @@ function createNextFirewall(options = {}) {
         if (matched) {
           rule = `request:${matched.id}`;
           effective = action === "block" && matched.action === "block" ? "block" : "monitor";
-          if (effective === "block" && matched.ban) local.ban(ip, matched.ban);
+          if (effective === "block" && matched.ban && mayBan) local.ban(ip, matched.ban);
         }
       }
       // Page limits (firewall.md, step 6): never a ban, the cap lifts when the
@@ -316,9 +318,9 @@ function createNextFirewall(options = {}) {
         rule = "rate";
         retryAfter = current.rate.window;
         // Monitor mode reports what would have been banned, and bans nothing.
-        if (action === "block" && current.ban) local.ban(ip, current.ban.seconds);
+        if (action === "block" && current.ban && mayBan) local.ban(ip, current.ban.seconds);
       }
-      const said = (name, act) => ({ ip, rule: name, action: act, method: String(request.method || "").slice(0, 10), path, userAgent: headerOf(request, "user-agent") });
+      const said = (name, act) => ({ ip, rule: name, action: !mayBan && bansOnReport(name) ? "monitor" : act, method: String(request.method || "").slice(0, 10), path, userAgent: headerOf(request, "user-agent") });
       if (watched) {
         // Rate decided: the watched limit is reported as well.
         if (rule) remember(said(`limit:${watched.id}`, "monitor"), event);

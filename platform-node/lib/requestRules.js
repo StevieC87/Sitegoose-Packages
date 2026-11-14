@@ -13,13 +13,16 @@
 const { IpSet } = require("./ip.js");
 
 const MAX_RULES = 200;
-// How much of each part a rule may look at. Patterns come from our rules, but
-// the text comes from whoever is asking, and no regex engine we ship to can be
-// timed out: a bounded slice keeps a bad pattern from being a hung request.
+// How much of a part a regex looks at at a time. Patterns come from our rules,
+// but the text comes from whoever is asking, and no regex engine we ship to can
+// be timed out: a bounded window keeps a bad pattern from being a hung request.
+// The plain matchers cost one pass and read the whole part: cut short, 2,000
+// characters of filler would carry an attack past every rule.
 const MAX_TEXT = 2000;
+const WINDOW_STEP = 1000;
 const MAX_REGEX = 200;
 
-const lower = (value) => String(value ?? "").slice(0, MAX_TEXT).toLowerCase();
+const lower = (value) => String(value ?? "").toLowerCase();
 // One pass only, as the protocol says: enough for %2e%2e, and no risk of
 // decoding a visitor's own text into something that looks like an attack.
 // Each run of escapes is decoded on its own, so a stray "%" elsewhere can't
@@ -44,7 +47,9 @@ const normalizePath = (path) => lower(path).replace(/\\/g, "/").replace(/\/{2,}/
 // "/admin" here, which a rule on the raw text would miss. Takes the path
 // without its query string.
 function routedPath(path) {
-  const text = String(path ?? "").slice(0, MAX_TEXT);
+  // The whole path, never a cut one: "/./././…/login" is "/login" to a router
+  // however many "./" it carries.
+  const text = String(path ?? "");
   const unparamed = text.includes(";") ? text.split("/").map((segment) => segment.split(";")[0]).join("/") : text;
   const decoded = decodeOnce(unparamed).replace(/\\/g, "/");
   const out = [];
@@ -194,6 +199,31 @@ function freeRepeats(pattern) {
   return free;
 }
 
+// A regex is searched in windows of MAX_TEXT that start every WINDOW_STEP, to
+// the end of the part, so a match up to WINDOW_STEP long is found wherever it
+// sits. A window's edges aren't the part's: "^" is searched only in the window
+// that starts the part, "$" only in the one that ends it.
+function windowed(pattern) {
+  const regex = new RegExp(pattern, "i");
+  const trailing = /\\*\$$/.exec(pattern);
+  const start = pattern.startsWith("^");
+  // "\$" is a dollar sign; "\\$" is a backslash, then the end.
+  const end = Boolean(trailing) && (trailing[0].length - 1) % 2 === 0;
+  return {
+    test(text) {
+      if (text.length <= MAX_TEXT) return regex.test(text);
+      if (start && end) return false;
+      if (start) return regex.test(text.slice(0, MAX_TEXT));
+      // The first start whose window reaches the end of the part.
+      const lastFrom = Math.ceil((text.length - MAX_TEXT) / WINDOW_STEP) * WINDOW_STEP;
+      for (let from = end ? lastFrom : 0; from <= lastFrom; from += WINDOW_STEP) {
+        if (regex.test(text.slice(from, from + MAX_TEXT))) return true;
+      }
+      return false;
+    },
+  };
+}
+
 // regex: false for a page limit, which takes the plain matchers only (so the
 // server agent's nginx can carry the same limit); its pattern is dropped.
 function compileSection(section, { regex = true } = {}) {
@@ -205,7 +235,7 @@ function compileSection(section, { regex = true } = {}) {
   }
   if (regex && safePattern(section.regex)) {
     try {
-      out.regex = new RegExp(section.regex, "i");
+      out.regex = windowed(section.regex);
     } catch {
       // A pattern we can't compile is dropped; the rule's other parts stay.
     }
@@ -258,9 +288,13 @@ const PREPARED = Symbol("prepared");
 // The request as every rule reads it, worked out once. `path` is the full
 // target as the server received it, query string and all. The firewall
 // prepares a request once and hands the result to both the request rules and
-// the page limits, so the path is decoded and routed once, not twice.
+// the page limits, so the path is decoded and routed once, not twice. A "#"
+// ends the path and the query: every router drops it, so "/login#1" runs
+// /login, and kept it would miss every exact and suffix rule on /login.
 function prepare({ method = "", path = "", userAgent = "" } = {}) {
-  const target = String(path ?? "");
+  const whole = String(path ?? "");
+  const hash = whole.indexOf("#");
+  const target = hash === -1 ? whole : whole.slice(0, hash);
   const mark = target.indexOf("?");
   const pathPart = mark === -1 ? target : target.slice(0, mark);
   const rawQuery = lower(mark === -1 ? "" : target.slice(mark + 1));

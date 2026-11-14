@@ -546,5 +546,28 @@ class SharedKeysAndHeaders(unittest.TestCase):
         for name in ("Content-Length", "transfer-encoding", "Connection", "Set-Cookie", "Content-Type"):
             self.assertFalse(safe_header([name, "1"]), name)
 
+
+class PrivateFields(unittest.TestCase):
+    """Form protection is handed the whole form, sign-ups and checkouts
+    included: the same private names as platform-php, and card numbers
+    taken out of any value."""
+
+    def test_private_names_are_never_sent(self):
+        from analytics_platform.forms import plain_fields
+        private = ("password", "pwd", "pin", "otp", "api_key", "apiKey", "cc-number", "cc_num", "cc-csc", "cc-exp",
+                   "exp_month", "security_code", "iban", "routing", "account_number", "dob", "nonce", "auth",
+                   "two_factor_mfa", "csrfmiddlewaretoken", "analytics-shield")
+        kept = plain_fields({name: "x" for name in private + ("email", "message", "spinach")})
+        self.assertEqual(sorted(kept), ["email", "message", "spinach"])
+
+    def test_a_card_number_in_any_value_is_removed(self):
+        from analytics_platform.forms import plain_fields, without_card_numbers
+        self.assertEqual(without_card_numbers("pay with 4111 1111 1111 1111 please"), "pay with [removed] please")
+        self.assertEqual(without_card_numbers("4111-1111-1111-1111"), "[removed]")
+        # Luhn keeps order and phone numbers readable.
+        self.assertEqual(without_card_numbers("order 1234567890123"), "order 1234567890123")
+        self.assertEqual(plain_fields({"notes": ["5555555555554444", 7]}), {"notes": "[removed]"})
+        self.assertEqual(plain_fields({"qty": 3}), {"qty": "3"})
+
 if __name__ == "__main__":
     unittest.main()

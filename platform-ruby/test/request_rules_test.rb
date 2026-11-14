@@ -102,6 +102,57 @@ class RequestRulesSharedCasesTest < Minitest::Test
     assert_equal "%zz 1", RR.decode_once("%zz+1")
     assert_equal "\uFFFD", RR.decode_once("%ff")
   end
+
+  # A regex reads a long part in windows of 2,000 every 1,000; one anchored
+  # to the start or the end reads only the window that holds it.
+  def test_a_regex_reads_a_long_part_in_windows
+    rules = ->(pattern) { RR.compile({ "rules" => [{ "id" => "r", "action" => "block", "query" => { "regex" => pattern } }] }) }
+    filler = "x" * 5000
+    assert_equal "r", RR.match(rules.call("union[^&]{0,20}select"), "GET", "/?a=#{filler}&q=union%20select", "")["id"]
+    assert_equal "r", RR.match(rules.call("select$"), "GET", "/?a=#{filler}&q=union%20select", "")["id"]
+    assert_nil RR.match(rules.call("^q=union"), "GET", "/?a=#{filler}&q=union", "")
+    assert_equal "r", RR.match(rules.call("^a=x"), "GET", "/?a=#{filler}&q=union", "")["id"]
+    # The window that starts at 1,000 must not read as the start of the query.
+    assert_nil RR.match(rules.call("^x{1000}$"), "GET", "/?#{'y' * 1000}#{'x' * 1000}", "")
+    assert_nil RR.match(rules.call("^y.*$"), "GET", "/?#{'y' * 2001}", "")
+    assert_equal [0, 1000, 2000, 3000], RR.window_starts(5000, false, false).to_a
+    assert_equal [1000], RR.window_starts(2500, false, true).to_a
+    assert_equal [0], RR.window_starts(2000, true, true).to_a
+    refute RR.ends_anchored?("a\\$")
+    assert RR.ends_anchored?("a\\\\$")
+  end
+
+  # Rack::MethodOverride runs after us: a POST asking for DELETE is routed
+  # as a DELETE, and HEAD runs GET routes.
+  def test_a_post_is_also_the_method_it_asks_for_and_head_is_also_get
+    rules = RR.compile({ "rules" => [
+                         { "id" => "delete", "action" => "block", "methods" => ["DELETE"], "path" => { "prefix" => ["/api/users/"] } },
+                         { "id" => "get", "action" => "block", "methods" => ["GET"], "path" => { "exact" => ["/admin"] } }
+                       ] })
+    assert_nil RR.match(rules, "POST", "/api/users/1", "")
+    assert_equal "delete", RR.match(rules, "POST", "/api/users/1", "", RR.prepare("POST", "/api/users/1", "", overrides: ["delete"]))["id"]
+    assert_nil RR.match(rules, "PUT", "/api/users/1", "", RR.prepare("PUT", "/api/users/1", "", overrides: ["DELETE"])), "only a POST is overridden"
+    assert_equal "get", RR.match(rules, "HEAD", "/admin", "")["id"]
+    assert_equal "get", RR.match(rules, "POST", "/admin", "", RR.prepare("POST", "/admin", "", overrides: ["HEAD"]))["id"]
+    assert_equal %w[POST], RR.methods_of("POST", ["DE LETE", "", "x" * 30])
+  end
+
+  # The path the app routes on counts too, when the server read the target differently.
+  def test_the_routed_path_is_matched_as_well
+    rules = RR.compile({ "rules" => [{ "id" => "admin", "action" => "block", "path" => { "prefix" => ["/admin"] } }] })
+    assert_nil RR.match(rules, "GET", "/x:/admin", "")
+    assert_equal "admin", RR.match(rules, "GET", "/x:/admin", "", RR.prepare("GET", "/x:/admin", "", also_path: "/admin"))["id"]
+  end
+end
+
+class OriginFormTest < Minitest::Test
+  def test_every_shared_target
+    shared("request-rules-cases.json")["targets"].each do |c|
+      assert_equal c["origin"], SiteGoose.origin_form(c["target"]), c["target"]
+      env = { "REQUEST_URI" => c["target"], "QUERY_STRING" => "" }
+      assert_equal c["origin"], SiteGoose.request_target(env), "request_target: #{c['target']}"
+    end
+  end
 end
 
 class RequestTargetTest < Minitest::Test
@@ -116,6 +167,23 @@ class RequestTargetTest < Minitest::Test
 
   def test_an_absolute_target_loses_its_scheme_and_host
     assert_equal "/p?q=1", target({ "REQUEST_URI" => "http://example.com/p?q=1", "QUERY_STRING" => "q=1" })
+    assert_equal "/admin", target({ "REQUEST_URI" => "x:/admin", "PATH_INFO" => "/admin", "QUERY_STRING" => "" })
+  end
+
+  def test_the_routed_path_only_when_it_differs
+    env = { "REQUEST_URI" => "/a%2e?q=1", "SCRIPT_NAME" => "", "PATH_INFO" => "/a%2e", "QUERY_STRING" => "q=1" }
+    assert_nil SiteGoose.routed_also(env, target(env))
+    env = { "REQUEST_URI" => "weird", "SCRIPT_NAME" => "", "PATH_INFO" => "/admin", "QUERY_STRING" => "" }
+    assert_equal "/admin", SiteGoose.routed_also(env, target(env))
+    assert_nil SiteGoose.routed_also({ "PATH_INFO" => "/admin" }, "/other"), "no REQUEST_URI: the target is the routed path"
+  end
+
+  def test_what_a_post_asks_to_be_routed_as
+    env = { "REQUEST_METHOD" => "POST", "QUERY_STRING" => "a=1&_method=patch&%5Fmethod=put" }
+    assert_equal %w[DELETE patch put], SiteGoose.method_overrides(env, { "x-http-method-override" => "DELETE" })
+    env["rack.request.form_hash"] = { "_method" => "delete" }
+    assert_includes SiteGoose.method_overrides(env, {}), "delete"
+    assert_equal [], SiteGoose.method_overrides({ "REQUEST_METHOD" => "GET", "QUERY_STRING" => "_method=delete" }, {})
   end
 
   # Rack's PATH_INFO is not decoded, so it is taken as it is; raw bytes are encoded.

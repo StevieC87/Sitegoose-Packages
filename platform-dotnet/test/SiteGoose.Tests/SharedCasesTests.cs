@@ -81,6 +81,17 @@ public class SharedCasesTests
     }
 
     [Fact]
+    public void RequestTargetsInOriginForm()
+    {
+        foreach (var c in Rules.GetProperty("targets").EnumerateArray())
+        {
+            var target = c.GetProperty("target").GetString()!;
+            // What the middleware hands the firewall: RawTarget, else the path.
+            Assert.True(c.GetProperty("origin").GetString() == Core.RequestTarget("/decoded", "", target), target + ": got " + Core.RequestTarget("/decoded", "", target));
+        }
+    }
+
+    [Fact]
     public void RequestRulePatterns()
     {
         var patterns = Rules.GetProperty("patterns");

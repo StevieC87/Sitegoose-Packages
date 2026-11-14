@@ -62,8 +62,8 @@ warns that the rate limit isn't working.
     route (`/Account/Login/x.css`) too, and WooCommerce takes a login posted
     to any address.
   - Cut at the first `?` or `#`; what is left must start with `/` and be at
-    most 2,000 characters (the rules' limit: cut there, `/search/xxx…x.css/more`
-    would end in `.css`).
+    most 2,000 characters (a longer one is no file: no asset has a name that
+    long).
   - An encoded slash (`%2F`, any case) in it → not static.
   - Decoded once; a `%xx` still there (double encoding), a `;` (a path
     parameter to some servers, part of the name to others), a `\`, an
@@ -239,8 +239,21 @@ updates.
   `regex` (one pattern, case-insensitive).
 - `ban`: seconds to ban the address as well, as the rate limit does. Only when
   the rule blocks.
-- At most 200 rules, 60 entries per matcher, 200 characters per pattern, and a
-  client matches only the **first 2,000 characters** of each part.
+- At most 200 rules, 60 entries per matcher and 200 characters per pattern.
+  `exact`, `prefix`, `suffix` and `contains` run over the **whole** part, however
+  long: they cost one pass, and a part cut short would let 2,000 characters of
+  filler carry an attack past every rule (`?pad=xxx…&file=../../wp-config.php`).
+  Only a `regex` is held to 2,000 characters at a time, since a backtracking
+  engine's cost grows faster than the text: it is searched in the first 2,000
+  characters, then in every further window of 2,000 that starts 1,000 later,
+  to the end of the part, so a match up to 1,000 characters long is found
+  wherever it sits. A window's edges are not the part's: a pattern that
+  begins with `^` is searched only in the first window, and one that ends with
+  `$` (not `\$`) only in the last of those windows (the first one to reach the
+  end of the part, so between 1,000 and 2,000 characters long), so neither
+  matches in the middle of a long path. Prefer plain matchers, or a `regex` whose match stays short
+  (bounded repeats): a match spanning more than 1,000 characters is found only
+  inside the first 2,000.
 - A `regex` stays in the common subset of JavaScript, PCRE, Python, Ruby,
   Java and .NET: no
   backreferences, no lookbehind, and **no quantifier on a group that itself
@@ -261,15 +274,33 @@ updates.
 A rule matches when **every section it names** matches and, within a section,
 **any one entry** does. For each request, prepare:
 
+- The **target**: the path and query as the request line carries them, in
+  origin form. A target that doesn't start with `/` (absolute form, or
+  anything else a server accepts) is read the way the server's own URL parser
+  reads it: a leading scheme (`[a-z][a-z0-9+.-]*:`) dropped, then, after a
+  `//`, the authority up to the next `/`, `?` or `#`; what is left gets a `/`
+  in front when it has none. So `http://h/admin?x` is `/admin?x`, and
+  `x:/admin` and `http:/admin` are `/admin`: Puma, gunicorn and Go's
+  `net/http` all route those as `/admin`, and a firewall that kept `x:/admin`
+  would let it past every prefix rule. `*` (`OPTIONS *`) stays as it is.
+  `targets` in `request-rules-cases.json` holds the cases.
 - `method`: upper-case.
-- `path`: before the `?`, lower-cased, `\` as `/`, repeated `/` collapsed.
-- `query`: after the first `?` (empty when there is none), lower-cased.
+- `path`: before the first `?` or `#`, lower-cased, `\` as `/`, repeated `/`
+  collapsed. Browsers never send a `#`, but a raw client can, and Express,
+  Koa, Fastify, gunicorn and nginx all drop it before routing: `POST /login#1`
+  runs the login, so a `/login` kept as `/login#1` would miss every exact and
+  suffix rule and every page limit.
+- `query`: after the first `?`, up to a `#` (empty when there is none), lower-cased.
+  The target is cut at its first `#` before either is taken, so in `/a#x?y` the
+  `?y` is part of the fragment and the query is empty.
 - `ua`: the user agent, lower-cased; the empty string when it is missing.
 - Each of those **URL-decoded once** as well: a section matches if either the
   raw or the decoded text matches, so `%2e%2e%2f` is caught like `../`.
 - The `path` also **as a router reads it**: `;params` dropped from each
   segment, decoded once, `\` as `/`, repeated `/` collapsed, `.` and `..`
-  segments resolved (never above the root), lower-cased. A rule matches if any
+  segments resolved (never above the root), lower-cased, from the **whole**
+  path, never a cut one: `/./././…/login` is `/login` to Kestrel, Tomcat and
+  nginx however many `./` it carries. A rule matches if any
   of the three forms does, so `/x/..;/actuator/env`, `/a/./b` and
   `/a;jsessionid=1/b` don't slip past a prefix rule for `/actuator/` or an
   exact one for `/a/b`. `probes` match the raw or the routed path too.
@@ -382,6 +413,18 @@ All in memory, no network call:
 9. Matched: in block mode answer 403 (429 with `Retry-After` for `rate` and
    `limit:<id>`); in monitor mode pass. A request rule whose action is `monitor` passes even in
    block mode. Either way, report it.
+
+**A request another site made the browser send is refused, never banned.**
+Any page can make a visitor's browser ask a site for `/.env` (an `<img>`, a
+`no-cors` fetch, a redirect, a link) or ask for a page 120 times a minute, and
+the request comes from the visitor's own address. So when `Sec-Fetch-Site` is
+`cross-site` or `same-site` (any case), a probe, a request rule or the rate
+limit still answers as above, but **bans no one** on this server, and the
+event is reported with action `monitor`, so the collector bans nobody on the
+site's other servers and counts nothing toward `shared` either. `same-origin`,
+`none` or no header at all (every scanner and script) is treated as before.
+A client that forges the header only gives up the ban: it is still refused
+every time it trips a rule, and still over the rate while it floods.
 
 Use a sorted range lookup (binary search) or a trie, not a list scan:
 `lists` alone holds about 1,500 ranges.

@@ -9,7 +9,7 @@
 const fs = require("node:fs");
 const { parseIp, parseRange, IpSet, hop, counterKey, makeRoom } = require("./ip.js");
 const { fromCloudflare } = require("./cloudflare.js");
-const { createLocalBans, compileProbes, isProbe, isStatic, routedToPage } = require("./bans.js");
+const { createLocalBans, compileProbes, isProbe, isStatic, routedToPage, sentForAnotherSite, bansOnReport } = require("./bans.js");
 const { compileRequestRules, matchRequest, prepare, compileLimits, matchLimits } = require("./requestRules.js");
 const {
   compileChallenge, createSigner, hasPassSync, passForSync, asksForPage, exempted, challengePage,
@@ -106,18 +106,19 @@ function serverNameOf(options) {
 // onBlock(req, res, decision) (send your own response; not called for the
 // browser check, whose page is what lets a browser through); cacheFile (rules
 // are kept there between restarts); serverName (sent with the rules fetch).
-// "http://host/a?b" as "/a?b". Anything else, or a target that isn't a URL
-// ("*" for OPTIONS), is kept as it is.
+// The request target in origin form, read the way a server's URL parser reads
+// it: "http://host/a?b" is "/a?b", and so are "x:/a?b" and "http:/a?b", which
+// Puma, gunicorn and Go route as /a (a URL parser would make "http:/a" the
+// host "a"). A leading scheme is dropped, then the authority after a "//", and
+// what is left gets a "/" in front. "*" (OPTIONS) is kept as it is.
 function originForm(target) {
   const text = String(target);
-  if (text.startsWith("/")) return text;
-  try {
-    const url = new URL(text);
-    return `${url.pathname}${url.search}`;
-  } catch {
-    return text;
-  }
+  if (text.startsWith("/") || text === "*") return text;
+  let rest = text.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:/, "");
+  if (rest.startsWith("//")) rest = rest.replace(/^\/\/[^/?#]*/, "");
+  return rest.startsWith("/") ? rest : `/${rest}`;
 }
+
 
 function createFirewall(core, options = {}) {
   const valid = core.valid;
@@ -294,13 +295,15 @@ function createFirewall(core, options = {}) {
     }
   }
 
-  // { ip, method, path, userAgent, accept, cookie } -> { action: "allow" |
+  // { ip, method, path, userAgent, accept, cookie, fetchSite } -> { action: "allow" |
   // "block" | "monitor", rule, status }. Allowed addresses skip every other
   // rule. accept and cookie (the request's headers) are what the browser
   // check needs: without an Accept asking for text/html no request is checked. A checked request
   // is rule "challenge", status 503, with the page to send as headers and
-  // body.
-  function check({ ip, method = "", path = "", userAgent = "", accept = "", cookie = "" } = {}) {
+  // body. fetchSite (Sec-Fetch-Site) "cross-site" or "same-site": a probe, a
+  // request rule or the rate limit still refuses it, but bans no one, here or
+  // (reported as monitor) on the other servers.
+  function check({ ip, method = "", path = "", userAgent = "", accept = "", cookie = "", fetchSite = "" } = {}) {
     const allow = { action: "allow", rule: "", status: 200 };
     const current = rules;
     if (!current?.enabled) return allow;
@@ -308,6 +311,7 @@ function createFirewall(core, options = {}) {
     if (!address || current.allow.has(address)) return allow;
     const mode = options.mode === "block" || options.mode === "monitor" ? options.mode : current.mode;
     const action = mode === "block" ? "block" : "monitor";
+    const mayBan = !sentForAnotherSite(fetchSite);
     // A request rule may only watch, even when the site blocks.
     let effective = action;
     let rule = current.deny.has(address) ? "deny"
@@ -317,7 +321,7 @@ function createFirewall(core, options = {}) {
     if (!rule && isProbe(path, current.probes)) {
       rule = "probe";
       // Asking for a secret file: banned here in block mode; the report bans it on the other servers.
-      if (action === "block") local.ban(String(ip), current.probes.ban);
+      if (action === "block" && mayBan) local.ban(String(ip), current.probes.ban);
     }
     // Prepared once (decoded, routed) for the request rules and the page limits both.
     const prepared = !rule && (current.requests.length || current.limits.rules.length)
@@ -328,7 +332,7 @@ function createFirewall(core, options = {}) {
         rule = `request:${matched.id}`;
         effective = action === "block" && matched.action === "block" ? "block" : "monitor";
         // Banned here straight away; the report bans it on the site's other servers.
-        if (effective === "block" && matched.ban) local.ban(String(ip), matched.ban);
+        if (effective === "block" && matched.ban && mayBan) local.ban(String(ip), matched.ban);
       }
     }
     // A static file isn't counted toward the page limits or `rate`, only
@@ -359,17 +363,19 @@ function createFirewall(core, options = {}) {
       rule = "rate";
       retryAfter = Math.ceil(current.rate.window / 1000);
       // Banned here straight away in block mode, as a probe is; the report bans it on the other servers.
-      if (action === "block" && current.ban) local.ban(String(ip), current.ban.seconds);
+      if (action === "block" && current.ban && mayBan) local.ban(String(ip), current.ban.seconds);
     }
     // The browser check: not a mode matter, the collector sends it only for a
     // site to be checked.
     // A match that is only watched (monitor) still gets it: firewall.md, step 8.
+    // What another site made the browser send is reported as watched, so the
+    // collector bans and shares nobody for it.
     const event = (name, act) => ({
       ip: String(ip),
       rule: name,
-      action: act,
+      action: !mayBan && bansOnReport(name) ? "monitor" : act,
       method: String(method).slice(0, 10),
-      path: String(path).split("?")[0].slice(0, 300),
+      path: String(path).split(/[?#]/)[0].slice(0, 300),
       user_agent: String(userAgent).slice(0, 300),
     });
     if (watched) {
@@ -420,7 +426,7 @@ function createFirewall(core, options = {}) {
     const action = mode === "block" ? "block" : "monitor";
     report({
       ip: String(ip), rule, action, method: String(method).slice(0, 10),
-      path: String(path).split("?")[0].slice(0, 300), user_agent: String(userAgent).slice(0, 300),
+      path: String(path).split(/[?#]/)[0].slice(0, 300), user_agent: String(userAgent).slice(0, 300),
     });
     return { action, rule, status: 403 };
   }
@@ -485,7 +491,9 @@ function createFirewall(core, options = {}) {
       const own = options.path(req);
       if (typeof own === "string") return own;
     }
-    return originForm(req.originalUrl || req.url || "/");
+    // A "#" goes no further: Node's parser keeps it, but Express, Koa and
+    // Fastify drop it before routing, so "/login#1" is /login.
+    return originForm(req.originalUrl || req.url || "/").split("#")[0];
   }
 
   // Express / Connect / node:http middleware.
@@ -500,6 +508,7 @@ function createFirewall(core, options = {}) {
         userAgent: header(req, "user-agent"),
         accept: header(req, "accept"),
         cookie: header(req, "cookie"),
+        fetchSite: header(req, "sec-fetch-site"),
       });
     } catch (error) {
       log("check failed, request passed:", error?.message);

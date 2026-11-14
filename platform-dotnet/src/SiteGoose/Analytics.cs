@@ -326,8 +326,21 @@ internal sealed class Forms
 {
     public const int MaxFields = 50;
     public const string AnswerField = "analytics-shield";
-    private static readonly System.Text.RegularExpressions.Regex PrivateField = new("pass|card|cvc|cvv|secret|token|ssn|iban|csrf|analytics-shield",
+    // Fields never sent, by name: the same list as the other packages',
+    // autocomplete's cc-number, cc-csc and cc-exp included. CheckAsync is
+    // handed the whole form, so whoever adds it to a sign-up or a checkout
+    // relies on this list: keep it wide. ("pass" also covers passwd and
+    // passport.) Word edges are ASCII, as PHP's \b, so "éauth" reads alike everywhere.
+    private const string Edge = "(?<![A-Za-z0-9_])", EdgeAfter = "(?![A-Za-z0-9_])";
+    private static readonly System.Text.RegularExpressions.Regex PrivateField = new(
+        "pass|pwd|card|cc[-_]?(num|no|number|csc|exp)|cvc|cvv|cvn|expiry|exp[-_]?(month|year|date)|secret|token|" + Edge + "auth" + EdgeAfter + "|authoriz|api[-_]?key|otp|mfa|2fa|"
+        + Edge + "pin" + EdgeAfter + "|security[-_]?code|signature|private|ssn|sin" + EdgeAfter + "|nino|tax[-_]?id|iban|bic|swift|routing|account[-_]?(no|num|number)|dob|birth|licen[cs]e|csrf|nonce|analytics-shield",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    // A card number in a field nobody thought to name "card" still must not be
+    // sent, so values are checked too: 13-19 digits that pass Luhn are taken out
+    // of the text and the rest of the message is kept, so spam is still judged.
+    private static readonly System.Text.RegularExpressions.Regex Digits = new(Edge + "(?:[0-9][ -]?){12,18}[0-9]" + EdgeAfter,
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     private readonly Core core;
 
@@ -342,10 +355,32 @@ internal sealed class Forms
         foreach (var pair in fields.Take(MaxFields))
         {
             if (PrivateField.IsMatch(pair.Key)) continue;
-            output[J.Clip(pair.Key, 100)] = J.Clip(string.Join(", ", pair.Value.Where(v => v != null)), 2000);
+            output[J.Clip(pair.Key, 100)] = WithoutCardNumbers(J.Clip(string.Join(", ", pair.Value.Where(v => v != null)), 2000));
         }
         return output;
     }
+
+    /// <summary>Anything shaped like a card number, and passing Luhn, as
+    /// [removed]. Luhn is what keeps order numbers and phone numbers readable.</summary>
+    public static string WithoutCardNumbers(string text) => Digits.Replace(text, match =>
+    {
+        var sum = 0;
+        var alt = false;
+        for (var i = match.Value.Length - 1; i >= 0; i--)
+        {
+            var c = match.Value[i];
+            if (c < '0' || c > '9') continue;
+            var n = c - '0';
+            if (alt)
+            {
+                n *= 2;
+                if (n > 9) n -= 9;
+            }
+            sum += n;
+            alt = !alt;
+        }
+        return sum % 10 == 0 ? "[removed]" : match.Value;
+    });
 
     public async Task<FormCheck> CheckAsync(IEnumerable<KeyValuePair<string, string[]>> fields, string? ip = "", string? email = null, string? name = null, string? form = null)
     {
