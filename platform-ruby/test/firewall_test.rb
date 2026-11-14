@@ -102,7 +102,7 @@ class CrossSiteTest < Minitest::Test
             "probes" => { "exact" => ["/.env"], "ban" => 600 },
             "requests" => { "rules" => [{ "id" => "stop", "action" => "block", "ban" => 60, "path" => { "exact" => ["/s"] } }] } }.freeze
 
-  def test_refused_but_never_banned_and_reported_as_watched
+  def test_refused_but_never_banned_and_reported_as_refused
     %w[cross-site Same-Site].each do |site|
       w = wall(RULES)
       assert_equal [403, "probe"], w.check("203.0.113.9", "GET", "/.env", fetch_site: site).values_at(:status, :rule)
@@ -111,7 +111,7 @@ class CrossSiteTest < Minitest::Test
       assert_equal "block", w.check("203.0.113.9", "GET", "/", fetch_site: site)[:action], "still refused"
       assert_empty w.bans, site
       assert_equal "rate", w.check("203.0.113.9", "GET", "/x", fetch_site: site)[:rule], "not banned: only over the rate"
-      assert_equal(%w[monitor], w.queue.values.map { |e| e["action"] }.uniq, site)
+      assert_equal(%w[refused], w.queue.values.map { |e| e["action"] }.uniq, site)
       assert_equal %w[probe rate request:stop], w.queue.values.map { |e| e["rule"] }.uniq.sort
     end
   end

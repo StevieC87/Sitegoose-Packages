@@ -745,7 +745,7 @@ public final class Firewall {
         if (r.allow.has(key)) {
             return Decision.ALLOW;
         }
-        // What the report says: "monitor" when nobody may be banned for it.
+        // What the report says: "refused" when nobody may be banned for it.
         boolean spared = false;
         String rule = r.deny.has(key) ? "deny"
                 : r.banned.has(key) || bannedHere(ip) ? "ban"
@@ -827,7 +827,7 @@ public final class Firewall {
         if (rule.isEmpty()) {
             return late == null ? Decision.ALLOW : new Decision("allow", "", 200, 0, late);
         }
-        report(event(ip, rule, spared && !"challenge".equals(rule) ? "monitor" : action, method, path, userAgent));
+        report(event(ip, rule, spared && !"challenge".equals(rule) && "block".equals(action) ? "refused" : action, method, path, userAgent));
         return new Decision(action, rule, "rate".equals(rule) || rule.startsWith("limit:") ? 429 : "challenge".equals(rule) ? 503 : 403, window,
                 "block".equals(action) ? null : late);
     }
@@ -852,7 +852,7 @@ public final class Firewall {
         if (rule.isEmpty()) {
             return Decision.ALLOW;
         }
-        report(event(ip, rule, foreign ? "monitor" : action, method, path, userAgent));
+        report(event(ip, rule, foreign && "block".equals(action) ? "refused" : action, method, path, userAgent));
         return new Decision(action, rule, 403);
     }
 

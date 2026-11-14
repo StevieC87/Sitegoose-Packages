@@ -403,8 +403,12 @@ internal sealed class Forms
             if (res != null && res.Status == 403) core.Log("forms", "the site secret was refused; forms aren't checked");
             return unchecked_;
         }
-        var data = res.Json();
-        var spam = J.Prop(data, "success") is { ValueKind: JsonValueKind.False };
+        var data = res.Status == 200 ? res.Json() : null;
+        // A verdict, spam or not, is always a 200 with `success`. Anything else
+        // judged nothing, and must not look like protection that works.
+        var success = J.Prop(data, "success");
+        if (success is not { ValueKind: JsonValueKind.True or JsonValueKind.False }) return unchecked_;
+        var spam = success is { ValueKind: JsonValueKind.False };
         return new FormCheck { Ok = !spam, Spam = spam, Reasons = J.Strings(J.Prop(data, "reasons")), Checked = true };
     }
 }

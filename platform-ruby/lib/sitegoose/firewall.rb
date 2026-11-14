@@ -124,7 +124,7 @@ module SiteGoose
     # A request another site made the browser send (firewall.md, "Checking a
     # request"): an <img> or a no-cors fetch on any page can ask for /.env,
     # or for a page 120 times a minute, from the visitor's own address. It
-    # is refused but bans no one, and is reported as only watched.
+    # is refused but bans no one, and is reported as refused.
     def self.foreign?(fetch_site)
       %w[cross-site same-site].include?(SiteGoose.text(fetch_site).strip.downcase)
     end
@@ -561,10 +561,10 @@ module SiteGoose
       decision = if rule.empty?
                    allow
                  else
-                   # Reported as watched, so the collector bans no one elsewhere
+                   # Reported as refused, so the collector bans no one elsewhere
                    # and counts nothing toward `shared`.
-                   foreign = !bans && (%w[probe rate].include?(rule) || rule.start_with?("request:"))
-                   report(event.call(rule, foreign ? "monitor" : action))
+                   foreign = !bans && action == "block" && (%w[probe rate].include?(rule) || rule.start_with?("request:"))
+                   report(event.call(rule, foreign ? "refused" : action))
                    if limit_window
                      # retry_after: the limit's own window, which the 429 carries.
                      { action: action, rule: rule, status: 429, retry_after: limit_window }

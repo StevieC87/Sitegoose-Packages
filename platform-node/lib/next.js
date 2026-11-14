@@ -320,7 +320,7 @@ function createNextFirewall(options = {}) {
         // Monitor mode reports what would have been banned, and bans nothing.
         if (action === "block" && current.ban && mayBan) local.ban(ip, current.ban.seconds);
       }
-      const said = (name, act) => ({ ip, rule: name, action: !mayBan && bansOnReport(name) ? "monitor" : act, method: String(request.method || "").slice(0, 10), path, userAgent: headerOf(request, "user-agent") });
+      const said = (name, act) => ({ ip, rule: name, action: !mayBan && act === "block" && bansOnReport(name) ? "refused" : act, method: String(request.method || "").slice(0, 10), path, userAgent: headerOf(request, "user-agent") });
       if (watched) {
         // Rate decided: the watched limit is reported as well.
         if (rule) remember(said(`limit:${watched.id}`, "monitor"), event);

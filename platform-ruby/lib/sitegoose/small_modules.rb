@@ -87,8 +87,11 @@ module SiteGoose
         @core.log("forms", "the site secret was refused; forms aren't checked") if res&.status == 403
         return unchecked
       end
-      data = res.json
-      data = {} unless data.is_a?(Hash)
+      data = res.status == 200 ? res.json : nil
+      # A verdict, spam or not, is always a 200 with `success`. Anything else
+      # judged nothing, and must not look like protection that works.
+      return unchecked unless data.is_a?(Hash) && [true, false].include?(data["success"])
+
       spam = data["success"] == false
       { ok: !spam, spam: spam, reasons: Array(data["reasons"]), checked: true }
     end

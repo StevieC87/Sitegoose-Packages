@@ -6,7 +6,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { plainFields, withoutCardNumbers } = require("../lib/forms.js");
+const { createForms, plainFields, withoutCardNumbers } = require("../lib/forms.js");
 
 const KEPT = { name: "Ada Lovelace", email: "ada@example.com", message: "Hello, I would like a quote.", author: "Ada", subject: "Enquiry" };
 const DROPPED = {
@@ -41,4 +41,19 @@ test("a card number is taken out of a field nobody named card, and the rest kept
 test("only the first fields are sent", () => {
   const many = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`f${i}`, "x"]));
   assert.ok(Object.keys(plainFields(many)).length <= 50);
+});
+
+// Only a 200 that says success true or false is a verdict: a 400, or a 200
+// without it, judged nothing and must not read as a form that passed a check.
+test("an answer that isn't a verdict leaves the form unchecked", async () => {
+  const answer = (status, body) => createForms({
+    isOn: () => true, log: () => {},
+    send: async () => ({ status, json: async () => body }),
+  }).checkForm(null, { fields: { msg: "hi" } });
+  const unchecked = { ok: true, spam: false, reasons: ["unchecked"], checked: false };
+  assert.deepEqual(await answer(400, { error: "bad" }), unchecked);
+  assert.deepEqual(await answer(200, { reasons: [] }), unchecked);
+  assert.deepEqual(await answer(200, { success: "no" }), unchecked);
+  assert.deepEqual(await answer(200, { success: false, reasons: ["honeypot"] }), { ok: false, spam: true, reasons: ["honeypot"], checked: true });
+  assert.deepEqual(await answer(200, { success: true }), { ok: true, spam: false, reasons: [], checked: true });
 });

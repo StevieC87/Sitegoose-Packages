@@ -368,12 +368,12 @@ function createFirewall(core, options = {}) {
     // The browser check: not a mode matter, the collector sends it only for a
     // site to be checked.
     // A match that is only watched (monitor) still gets it: firewall.md, step 8.
-    // What another site made the browser send is reported as watched, so the
+    // What another site made the browser send is reported as refused, so the
     // collector bans and shares nobody for it.
     const event = (name, act) => ({
       ip: String(ip),
       rule: name,
-      action: !mayBan && bansOnReport(name) ? "monitor" : act,
+      action: !mayBan && act === "block" && bansOnReport(name) ? "refused" : act,
       method: String(method).slice(0, 10),
       path: String(path).split(/[?#]/)[0].slice(0, 300),
       user_agent: String(userAgent).slice(0, 300),

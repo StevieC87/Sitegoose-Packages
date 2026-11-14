@@ -36,7 +36,7 @@ class SecurityFixesTest {
         Firewall wall = Fixtures.firewall("s", Json.map(Json.parse(RULES)));
         Firewall.Decision probe = wall.check("198.51.100.7", "GET", "/.env", "", "", "", "Cross-Site");
         assertEquals("block probe 403", probe.toString());
-        assertEquals("monitor", actionOf(wall, "probe"), "the collector bans nobody for it");
+        assertEquals("refused", actionOf(wall, "probe"), "the collector bans nobody for it");
         assertEquals("", wall.check("198.51.100.7", "GET", "/", "", "", "", "cross-site").rule, "not banned here");
 
         Firewall own = Fixtures.firewall("s", Json.map(Json.parse(RULES)));
@@ -49,11 +49,11 @@ class SecurityFixesTest {
     void aRequestRuleAndTheRateLimitFromAnotherSiteBanNoOne() {
         Firewall wall = Fixtures.firewall("s", Json.map(Json.parse(RULES)));
         assertEquals("block request:install 403", wall.check("198.51.100.7", "GET", "/wp-admin/install.php", "", "", "", "same-site").toString());
-        assertEquals("monitor", actionOf(wall, "request:install"));
+        assertEquals("refused", actionOf(wall, "request:install"));
         assertEquals("", wall.check("198.51.100.7", "GET", "/", "", "", "", "same-site").rule);
         assertEquals("", wall.check("198.51.100.7", "GET", "/", "", "", "", "same-site").rule);
         assertEquals("block rate 429", wall.check("198.51.100.7", "GET", "/", "", "", "", "same-site").toString());
-        assertEquals("monitor", actionOf(wall, "rate"));
+        assertEquals("refused", actionOf(wall, "rate"));
         assertEquals("rate", wall.check("198.51.100.7", "GET", "/", "", "", "").rule, "still over the rate, but not banned");
         assertTrue(Firewall.fromAnotherSite(" CROSS-SITE "));
         assertFalse(Firewall.fromAnotherSite("none"));

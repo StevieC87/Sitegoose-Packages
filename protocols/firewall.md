@@ -420,8 +420,10 @@ Any page can make a visitor's browser ask a site for `/.env` (an `<img>`, a
 the request comes from the visitor's own address. So when `Sec-Fetch-Site` is
 `cross-site` or `same-site` (any case), a probe, a request rule or the rate
 limit still answers as above, but **bans no one** on this server, and the
-event is reported with action `monitor`, so the collector bans nobody on the
-site's other servers and counts nothing toward `shared` either. `same-origin`,
+event is reported with action `refused`, so the collector bans nobody on the
+site's other servers and counts nothing toward `shared` either. The dashboard
+counts a `refused` request as blocked. Only what was turned away is
+`refused`: in monitor mode, or for a rule only watched, it stays `monitor`. `same-origin`,
 `none` or no header at all (every scanner and script) is treated as before.
 A client that forges the header only gives up the ban: it is still refused
 every time it trips a rule, and still over the rate while it floods.
@@ -645,7 +647,10 @@ configured.
 ```
 
 `rule` is one of the names above, `request:<id>` for a request rule or
-`limit:<id>` for a page limit.
+`limit:<id>` for a page limit. `action` is `block`, `monitor`, or `refused`
+for a request another site made the browser send that was turned away
+without a ban ("Checking a request"). A collector older than `refused`
+drops those rows, so it is deployed before the packages that send it.
 Group identical (ip, rule, action, method, path) into one row with `hits`,
 send every few seconds, at most 200 rows per request. `path` without the query
 string, 300 characters at most.

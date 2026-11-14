@@ -37,7 +37,7 @@ public class ScanFixesTests
             var d = wall.Check("198.51.100.7", "GET", path, fetchSite: site);
             Assert.Equal(("block", rule), (d.Action, d.Rule));
             // Reported as only watched, so the collector bans no one elsewhere.
-            Assert.Equal("monitor", wall.Queued().Single(r => (string)r["rule"]! == rule)["action"]);
+            Assert.Equal("refused", wall.Queued().Single(r => (string)r["rule"]! == rule)["action"]);
             // And not banned here: an ordinary page from the same address still passes.
             Assert.NotEqual("ban", wall.Check("198.51.100.7", "GET", "/about", fetchSite: "same-origin").Rule);
         }

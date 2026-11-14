@@ -65,7 +65,7 @@ class CrossSite(unittest.TestCase):
                 decision = wall.check("203.0.113.9", "GET", path, fetch_site=value)
                 self.assertEqual((decision["action"], decision["rule"], decision["status"]), ("block", rule, 403))
             self.assertEqual(wall.bans, {}, value)
-            self.assertEqual(self.actions(wall), {"probe": "monitor", "request:shell": "monitor"})
+            self.assertEqual(self.actions(wall), {"probe": "refused", "request:shell": "refused"})
             self.assertEqual(wall.check("203.0.113.9", "GET", "/")["rule"], "", "not banned afterwards")
 
     def test_the_rate_is_answered_but_bans_nobody(self):
@@ -73,7 +73,7 @@ class CrossSite(unittest.TestCase):
         rules = [wall.check("203.0.113.9", "GET", "/", fetch_site="cross-site")["rule"] for _ in range(4)]
         self.assertEqual(rules, ["", "", "rate", "rate"])
         self.assertEqual(wall.bans, {})
-        self.assertEqual(self.actions(wall), {"rate": "monitor"})
+        self.assertEqual(self.actions(wall), {"rate": "refused"})
 
     def test_same_origin_or_no_header_bans_as_before(self):
         for value in ("same-origin", "none", ""):

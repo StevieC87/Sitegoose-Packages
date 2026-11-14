@@ -84,7 +84,10 @@ function createForms(core, { clientIp } = {}) {
         log("the site secret was refused; forms aren't checked");
         return open("unchecked");
       }
-      const spam = data?.success === false;
+      // A verdict, spam or not, is always a 200 with `success`. Anything else
+      // judged nothing, and must not look like protection that works.
+      if (res.status !== 200 || typeof data?.success !== "boolean") return open("unchecked");
+      const spam = data.success === false;
       return { ok: !spam, spam, reasons: Array.isArray(data?.reasons) ? data.reasons : [], checked: true };
     } catch (error) {
       log("could not check a form:", error?.message);

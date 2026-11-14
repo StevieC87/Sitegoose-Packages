@@ -12,14 +12,14 @@ Maven:
 <dependency>
   <groupId>com.sitegoose</groupId>
   <artifactId>sitegoose</artifactId>
-  <version>0.3.5</version>
+  <version>0.3.6</version>
 </dependency>
 ```
 
 Gradle:
 
 ```kotlin
-implementation("com.sitegoose:sitegoose:0.3.5")
+implementation("com.sitegoose:sitegoose:0.3.6")
 ```
 
 ## Spring Boot 3

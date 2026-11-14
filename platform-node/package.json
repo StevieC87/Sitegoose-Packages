@@ -1,6 +1,6 @@
 {
   "name": "analytics-platform",
-  "version": "0.3.15",
+  "version": "0.3.16",
   "description": "Firewall, error monitoring and server analytics for your Node server, run from your analytics dashboard.",
   "author": "steviec87",
   "license": "MIT",

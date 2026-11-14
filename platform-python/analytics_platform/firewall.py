@@ -633,10 +633,10 @@ class Firewall:
             if action == "block" and not foreign:
                 self._ban_here(str(ip), rules["ban"])
         def event(name, act):
-            # Reported as only watched, so the collector bans it on no other
+            # Reported as refused, so the collector bans it on no other
             # server and counts nothing toward `shared`.
             if foreign and act == "block" and (name in ("probe", "rate") or name.startswith("request:")):
-                act = "monitor"
+                act = "refused"
             return {"ip": str(ip), "rule": name, "action": act,
                     "method": str(method)[:10], "path": re.split(r"[?#]", str(path), 1)[0][:300],
                     "user_agent": str(user_agent)[:300]}

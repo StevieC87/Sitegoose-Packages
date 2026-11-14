@@ -78,8 +78,12 @@ class Forms:
             if res is not None and res.status == 403:
                 self.core.log("forms", "the site secret was refused; forms aren't checked")
             return unchecked
-        data = res.json() or {}
-        spam = data.get("success") is False
+        data = res.json() if res.status == 200 else None
+        # A verdict, spam or not, is always a 200 with `success`. Anything else
+        # judged nothing, and must not look like protection that works.
+        if not isinstance(data, dict) or not isinstance(data.get("success"), bool):
+            return unchecked
+        spam = data["success"] is False
         return {"ok": not spam, "spam": spam, "reasons": list(data.get("reasons") or []), "checked": True}
 
     def flush(self):

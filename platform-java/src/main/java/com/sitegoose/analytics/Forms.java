@@ -144,9 +144,11 @@ final class Forms {
             }
             return unchecked();
         }
-        Map<String, Object> data = Json.map(res.json());
-        if (data == null) {
-            data = Collections.emptyMap();
+        Map<String, Object> data = res.status == 200 ? Json.map(res.json()) : null;
+        // A verdict, spam or not, is always a 200 with `success`. Anything else
+        // judged nothing, and must not look like protection that works.
+        if (data == null || !(data.get("success") instanceof Boolean)) {
+            return unchecked();
         }
         boolean spam = Boolean.FALSE.equals(data.get("success"));
         return new FormCheck(!spam, spam, Json.strings(data.get("reasons")), true);

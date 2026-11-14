@@ -427,7 +427,7 @@ class Firewall
         // it is refused but bans no one, here or anywhere else.
         $reported = $action;
         if ($action === 'block' && ($rule === 'probe' || $rule === 'rate' || $matched) && self::crossSite($fetchSite)) {
-            $reported = 'monitor';
+            $reported = 'refused';
         }
         // A request rule the dashboard only watches passes even in block mode;
         // one that blocks also bans the address here, as a flood does.

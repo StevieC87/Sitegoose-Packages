@@ -74,7 +74,7 @@ const NODE_ADAPTERS = {
 };
 
 for (const [name, adapter] of Object.entries(NODE_ADAPTERS)) {
-  test(`${name}: a probe, a request rule or the rate limit another site caused is refused, reported as monitor, and bans no one`, async (t) => {
+  test(`${name}: a probe, a request rule or the rate limit another site caused is refused, reported as refused, and bans no one`, async (t) => {
     const core = rulesCore();
     const firewall = createFirewall(core);
     await firewall.ready;
@@ -91,10 +91,10 @@ for (const [name, adapter] of Object.entries(NODE_ADAPTERS)) {
       assert.equal(await ask("/.env", foreign, ip), 403);
       assert.equal(await ask("/shell.php", foreign, ip), 403);
       assert.equal(await ask("/", {}, ip), 0, "not banned for either");
-      assert.deepEqual(await reported(), ["probe monitor", "request:shell monitor"]);
+      assert.deepEqual(await reported(), ["probe refused", "request:shell refused"]);
       assert.equal(await ask("/", foreign, ip), 429, "over the rate");
       assert.equal(await ask("/", {}, ip), 429, "still over the rate, not banned");
-      assert.deepEqual(await reported(), ["rate monitor", "rate block"]);
+      assert.deepEqual(await reported(), ["rate refused", "rate block"]);
     }
 
     // Same-origin, none or no header: as before.
@@ -117,7 +117,7 @@ function edgeFetch(t) {
   return events;
 }
 
-test("next: what another site caused is refused, reported as monitor, and bans no one", async (t) => {
+test("next: what another site caused is refused, reported as refused, and bans no one", async (t) => {
   const events = edgeFetch(t);
   const who = { ip: "" };
   const firewall = createNextFirewall({ siteId: SITE, secret: "s", endpoint: ENDPOINT, trustProxy: () => who.ip });
@@ -138,7 +138,7 @@ test("next: what another site caused is refused, reported as monitor, and bans n
   assert.equal(await ask("/", {}, "198.51.100.10"), 0, "not banned for either");
   assert.equal(await ask("/", foreign, "198.51.100.10"), 429);
   assert.equal(await ask("/", {}, "198.51.100.10"), 429, "still over the rate, not banned");
-  assert.deepEqual((await reported()).sort(), ["probe monitor", "rate block", "rate monitor", "request:shell monitor"]);
+  assert.deepEqual((await reported()).sort(), ["probe refused", "rate block", "rate refused", "request:shell refused"]);
 
   assert.equal(await ask("/.env", { "sec-fetch-site": "same-origin" }, "198.51.100.20"), 403);
   assert.equal(await ask("/", {}, "198.51.100.20"), 403, "banned for the probe");
@@ -166,5 +166,5 @@ test("hono: a probe another site caused gets its 403 and bans no one", async (t)
   assert.equal(await ask("/about", {}), 0, "not banned");
   await platform.flush();
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepEqual(events.map((event) => `${event.rule} ${event.action}`), ["probe monitor"]);
+  assert.deepEqual(events.map((event) => `${event.rule} ${event.action}`), ["probe refused"]);
 });

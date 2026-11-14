@@ -10,7 +10,7 @@ Security = "https://sitegoose.com/security"
 
 [project]
 name = "analytics-platform"
-version = "0.3.11"
+version = "0.3.12"
 description = "Firewall, error monitoring and server analytics for your Python server, run from your analytics dashboard."
 readme = "README.md"
 requires-python = ">=3.8"

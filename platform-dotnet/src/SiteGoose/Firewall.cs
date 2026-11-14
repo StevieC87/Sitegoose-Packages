@@ -661,7 +661,7 @@ internal sealed class Firewall
         var action = (Mode ?? rules.Mode) == "block" ? "block" : "monitor";
         // Another site made the browser send it (an <img src="/.env">, a
         // no-cors fetch): refused as before, but its address is the visitor's
-        // own, so it bans no one here and is reported as only watched, so the
+        // own, so it bans no one here and is reported as refused, so the
         // collector bans no one elsewhere either (firewall.md, 'Checking a request').
         var fetch = (fetchSite ?? "").Trim().ToLowerInvariant();
         var otherSite = fetch == "cross-site" || fetch == "same-site";
@@ -749,7 +749,7 @@ internal sealed class Firewall
         }
         if (rule.Length == 0) return late == null ? FirewallDecision.Allow : new FirewallDecision("allow", "", 200) { Late = late };
         var banning = rule == "probe" || rule == "rate" || rule.StartsWith("request:", StringComparison.Ordinal);
-        Report(ip, rule, otherSite && banning ? "monitor" : action, m, p, ua);
+        Report(ip, rule, otherSite && banning && action == "block" ? "refused" : action, m, p, ua);
         return new FirewallDecision(action, rule, rule == "rate" || rule.StartsWith("limit:", StringComparison.Ordinal) ? 429 : rule == "challenge" ? 503 : 403, window) { Late = late };
     }
 
