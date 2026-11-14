@@ -1,7 +1,7 @@
 === Site Analytics ===
 Requires at least: 5.6
 Requires PHP: 7.4
-Stable tag: 2.5.1
+Stable tag: 2.5.2
 License: MIT
 
 Your analytics in WordPress: the tracker, WooCommerce orders sent from your server, a firewall, error monitoring and logins.

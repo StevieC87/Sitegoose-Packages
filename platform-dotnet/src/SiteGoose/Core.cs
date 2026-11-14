@@ -134,7 +134,7 @@ internal sealed class Periodic
 /// on. Sending never throws into the app.</summary>
 internal sealed class Core
 {
-    public const string Version = "0.3.6";
+    public const string Version = "0.3.7";
     /// <summary>SendAsync's status for a body that couldn't be turned into JSON: dropped, never retried.</summary>
     public const int Unsendable = -1;
     public const int TimeoutSeconds = 5;

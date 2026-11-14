@@ -23,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.3.10"
+VERSION = "0.3.11"
 TIMEOUT = 5
 MIN_SYNC = 30
 RETRY = 60

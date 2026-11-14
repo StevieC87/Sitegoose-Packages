@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Site Analytics
  * Description: Your analytics in WordPress: the tracker served from your own domain so ad blockers don't hide visitors, WooCommerce orders sent from your server, a firewall, error monitoring, server speed, file monitoring and a check of your plugins for known security holes. Settings → Site Analytics.
- * Version: 2.5.1
+ * Version: 2.5.2
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * License: MIT

@@ -6,7 +6,7 @@
 
   <groupId>com.sitegoose</groupId>
   <artifactId>sitegoose</artifactId>
-  <version>0.3.4</version>
+  <version>0.3.5</version>
   <packaging>jar</packaging>
 
   <name>SiteGoose</name>
