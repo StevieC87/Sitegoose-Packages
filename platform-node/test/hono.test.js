@@ -317,6 +317,7 @@ test("server events, audit entries, failed logins, flags and jobs, as in the mai
   assert.equal(await platform.identify("user-1", { c: visit.c, traits: { plan: "pro", seats: 5 } }), true);
   assert.deepEqual(await platform.lead({ email: "ann@example.com" }, { c: visit.c }), { status: "created", lead_id: "L1" });
   platform.audit("user.role_changed", { actor: "ann", target: "bob", details: { role: "admin" }, c: visit.c });
+  platform.login("ann", { staff: true, c: visit.c });
 
   // Two failed logins is the limit here: the address is then banned at once.
   platform.loginFailed(visit.c);
@@ -336,9 +337,10 @@ test("server events, audit entries, failed logins, flags and jobs, as in the mai
   assert.deepEqual([posted["/events/identify"][0].user_id, posted["/events/identify"][0].session_id], ["user-1", "sess-1"]);
   assert.deepEqual(posted["/events/identify"][0].traits, { plan: "pro", seats: 5 });
   assert.deepEqual([posted["/events/lead"][0].email, posted["/events/lead"][0].session_id], ["ann@example.com", "sess-1"]);
-  const [entry] = posted["/events/audit"].flatMap((b) => b.entries);
+  const [entry, login] = posted["/events/audit"].flatMap((b) => b.entries);
   assert.deepEqual([entry.action, entry.actor, entry.target, entry.actor_ip, entry.session_id, entry.details.role],
     ["user.role_changed", "ann", "bob", "198.51.100.4", "sess-1", "admin"]);
+  assert.deepEqual([login.action, login.actor, login.actor_ip, login.details.staff], ["user.login", "ann", "198.51.100.4", true]);
   const firewall = posted["/events/firewall/events"].flatMap((b) => b.events);
   assert.equal(firewall.filter((e) => e.rule === "login").reduce((n, e) => n + e.hits, 0), 2);
   assert.ok(firewall.some((e) => e.rule === "ban" && e.action === "block"));

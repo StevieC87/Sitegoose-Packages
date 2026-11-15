@@ -132,7 +132,7 @@ app.listen(3000);
 | `calls` | Time each route spends waiting on other services' APIs, by host, from `fetch`, `http` and `https` ([Outgoing calls](#outgoing-calls)); needs `performance` | on |
 | `queues` | Job backlog from `platform.watchQueue(queue)`, BullMQ or Bull ([Job queues](#job-queues)); needs `performance` | on |
 | `crawlers` | Which search engines and AI bots fetch your pages (Off-site → Crawlers). Your tracker can't see them: crawlers don't run JavaScript | on |
-| `audit` | `platform.audit("user.role_changed", { actor, target, details, req })` (Security → Audit log) | on |
+| `audit` | `platform.audit("user.role_changed", { actor, target, details, req })` (Security → Audit log), and `platform.login(user.email, { staff: user.isAdmin, req })` after each successful login, for unusual-login alerts ([Logins](#logins)) | on |
 | `flags` | `platform.isEnabled("new-checkout", { user: user.id })`: features on or off from the dashboard | on |
 | `maintenance` | A "back soon" page while maintenance mode is on in the dashboard | on |
 | `headers` | Adds the security headers you pick on the Security page; your own headers win | on |
@@ -344,6 +344,23 @@ digits); an event whose fields can't be (a circular object) is dropped there
 and `track()` returns `""`, so it never holds up the events after it.
 `audit()` does the same with `details`.
 
+### Logins
+
+Call `login()` after each successful login, and the Security page tells you
+when an account logs in from a country or a browser it hasn't used before,
+right after failed logins from the same address, or after months unused:
+
+```js
+platform.login(user.email, { staff: user.role === "admin", req });
+```
+
+The first argument is the name you know the account by. `staff`: whether the
+account can change your site; only staff accounts are watched unless you
+choose "Everyone" on the Security page, so a shop's customers don't raise an
+alert for every new phone. `req` adds the visitor's address and browser. It
+is an audit entry (`user.login`), so it needs the `audit` module and shows in
+the Audit log too.
+
 **User traits:** `identify()` takes an optional `traits` object of name to
 text, number or `true`/`false`. Lists, objects and other values are left out
 (and `traits` is left off when nothing is left). The collector does the rest:
@@ -491,6 +508,7 @@ const platform = createHonoPlatform((c) => ({ siteId, secret: c.env.ANALYTICS_SI
 - **Server events and the rest:** `platform.track("purchase", { value }, { c })`,
   `await platform.identify(user.id, { c })`, `await platform.lead({ email }, { c })`,
   `platform.audit("user.role_changed", { actor, target, c })`,
+  `platform.login(user.email, { staff, c })` after a successful login,
   `platform.loginFailed(c)` (or the address) and
   `platform.isEnabled("new-checkout", { user })`. `c` links them to the
   visit (the page's `x-analytics-session` header) and, on Workers, keeps the

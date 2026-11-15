@@ -59,7 +59,19 @@ function createAudit(core, { clientIp } = {}) {
     }
   }
 
-  return { audit, flush, close: flush };
+  // A successful login, for unusual-login alerts (Security → Audit log):
+  // actor is the account's login name, staff whether it can change the site
+  // (only staff accounts are watched unless the site watches everyone), req
+  // adds the address and the browser.
+  function login(actor, { staff = false, req } = {}) {
+    if (typeof actor !== "string" || !actor) return;
+    const agent = req?.headers?.["user-agent"];
+    const details = { staff: staff === true };
+    if (typeof agent === "string" && agent) details.user_agent = agent.slice(0, 500);
+    audit("user.login", { actor, details, req });
+  }
+
+  return { audit, login, flush, close: flush };
 }
 
 module.exports = { createAudit };

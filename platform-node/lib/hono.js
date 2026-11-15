@@ -522,7 +522,7 @@ function createHonoPlatform(options = {}) {
     } catch {
       // without the address
     }
-    return { headers: { "x-analytics-session": c.req.header("x-analytics-session") || undefined }, ip };
+    return { headers: { "x-analytics-session": c.req.header("x-analytics-session") || undefined, "user-agent": c.req.header("user-agent") || undefined }, ip };
   };
 
   function routeOf(c, own, status) {
@@ -793,6 +793,17 @@ function createHonoPlatform(options = {}) {
     run(c, (p) => {
       if (!p.audit) return;
       p.audit.audit(action, { ...entry, req: reqOf(p, c) });
+      soon(p, c, () => p.audit.flush());
+    }).catch(() => {});
+  };
+
+  // A successful login: login(user.email, { staff, c }), for unusual-login
+  // alerts; c adds the address and the browser.
+  analyticsPlatform.login = (actor, { staff = false, c } = {}) => {
+    if (!canRun(c)) return;
+    run(c, (p) => {
+      if (!p.audit) return;
+      p.audit.login(actor, { staff, req: reqOf(p, c) });
       soon(p, c, () => p.audit.flush());
     }).catch(() => {});
   };

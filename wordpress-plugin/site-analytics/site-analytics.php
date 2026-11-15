@@ -1111,9 +1111,13 @@ function site_analytics_platform_audit($action, $target = '', $details = null)
     site_analytics_platform()->audit($action, $user && $user->exists() ? $user->user_login : '', $target, $details);
 }
 
-add_action('wp_login', function ($login) {
-    site_analytics_platform()->audit('user.login', (string) $login);
-}, 20);
+// Through login(), which adds the browser and whether the account is staff
+// (one that can write posts or more), for unusual-login alerts: only staff
+// accounts are watched unless the site watches everyone, so a shop's
+// customers don't raise one for every new phone.
+add_action('wp_login', function ($login, $user = null) {
+    site_analytics_platform()->login((string) $login, $user instanceof WP_User && user_can($user, 'edit_posts'));
+}, 20, 2);
 add_action('wp_logout', function ($user_id = 0) {
     $user = $user_id ? get_userdata($user_id) : null;
     site_analytics_platform()->audit('user.logout', $user ? $user->user_login : '');

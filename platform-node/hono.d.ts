@@ -106,6 +106,8 @@ export function createHonoPlatform(options: HonoPlatformOptions | ((c: any) => H
     lead(fields: Record<string, unknown>, options?: { c?: any }): Promise<{ status: string; lead_id: string } | null>;
     /** Records who did what (Security → Audit log); c adds the actor's address and visit. */
     audit(action: string, options?: { actor?: string; target?: string; details?: unknown; c?: any }): void;
+    /** A successful login, for unusual-login alerts. staff: whether the account can change the site. */
+    login(actor: string, options?: { staff?: boolean; c?: any }): void;
     /** A failed login (bot protection): c, or the address. */
     loginFailed(cOrIp: any): void;
     /** A feature flag from the dashboard. user: for rollouts and user lists; default: until it's known (false). */

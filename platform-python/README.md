@@ -121,7 +121,7 @@ Celery's `task_always_eager`.
 | `proxy` | Serves the tracker and takes visits under your own domain, so ad blockers can't hide those visitors | on |
 | `errors` | Sends your server's errors to the Errors report | on |
 | `analytics` | `track()`, `identify()` and `lead()` from your server | on |
-| `audit` | `platform.audit("user.role_changed", actor=..., target=..., request=...)`; Django logins and logouts on their own | on |
+| `audit` | `platform.audit("user.role_changed", actor=..., target=..., request=...)`, and `platform.login(user.email, staff=user.is_admin, request=request)` after each successful login, for unusual-login alerts on the Security page (only staff accounts are watched unless the site chooses "Everyone"). Django logins and logouts on their own, logins with `is_staff` as staff | on |
 | `flags` | `platform.is_enabled("new-checkout", user=user.id)`: features on or off from the dashboard | on |
 | `maintenance` | A "back soon" page while maintenance mode is on in the dashboard | on |
 | `headers` | Adds the security headers you pick on the Security page; your own headers win | on |

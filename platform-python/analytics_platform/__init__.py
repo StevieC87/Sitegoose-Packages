@@ -292,6 +292,24 @@ class Platform:
         except Exception as error:
             self.core.log("audit", "could not record:", error)
 
+    def login(self, actor, staff=False, request=None, user_agent=None):
+        """A successful login, for unusual-login alerts (Security -> Audit
+        log). actor: the name you know the account by; staff: whether it can
+        change the site (only staff accounts are watched unless the site
+        watches everyone); request adds the address, visit and browser."""
+        if not isinstance(actor, str) or not actor:
+            return
+        if user_agent is None and request is not None:
+            try:
+                headers = getattr(request, "headers", None)
+                user_agent = headers.get("User-Agent") if headers is not None else None
+            except Exception:
+                user_agent = None
+        details = {"staff": staff is True}
+        if isinstance(user_agent, str) and user_agent:
+            details["user_agent"] = user_agent[:500]
+        self.audit("user.login", actor=actor, details=details, request=request)
+
     def check_form(self, request=None, fields=None, email=None, name=None, form=None):
         """Form protection: checks a form before you accept it. The form is
         request.POST (Django) or request.form (Flask), else pass fields (FastAPI:

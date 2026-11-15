@@ -218,6 +218,8 @@ function createPlatform(given = {}) {
     isEnabled: flags ? flags.isEnabled : (key, { default: fallback = false } = {}) => fallback,
     // Audit log: audit("user.role_changed", { actor, target, details, req }).
     audit: audit ? audit.audit : off("audit"),
+    // A successful login: login(user.email, { staff: user.isAdmin, req }).
+    login: audit ? audit.login : off("audit"),
     track: analytics ? analytics.track : () => (off("analytics")(), ""),
     identify: analytics ? analytics.identify : async () => (off("analytics")(), false),
     lead: analytics ? analytics.lead : async () => (off("analytics")(), null),

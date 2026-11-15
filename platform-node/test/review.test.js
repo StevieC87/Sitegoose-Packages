@@ -405,6 +405,21 @@ test("track() and audit() turn what JSON can't carry away at the call, and the q
   assert.deepEqual(bodies.flatMap((body) => body.entries || []).map((e) => e.action), ["fine"]);
 });
 
+test("login() sends user.login with the browser and whether the account is staff", async () => {
+  const bodies = [];
+  const core = { isOn: () => true, log: () => {}, send: async (m, p, { body }) => { bodies.push(body); return { ok: true, status: 202 }; } };
+  const audit = createAudit(core, { clientIp: () => "203.0.113.9" });
+  audit.login("ann", { staff: true, req: { headers: { "user-agent": `Mozilla/5.0 ${"x".repeat(600)}` } } });
+  audit.login("bob");
+  audit.login("");
+  await audit.flush();
+  const entries = bodies.flatMap((body) => body.entries);
+  assert.deepEqual(entries.map((e) => [e.action, e.actor, e.actor_ip, e.details.staff]),
+    [["user.login", "ann", "203.0.113.9", true], ["user.login", "bob", "", false]]);
+  assert.equal(entries[0].details.user_agent.length, 500);
+  assert.equal("user_agent" in entries[1].details, false);
+});
+
 test("identify() passes text, number and true/false traits through, and leaves traits off when none is left", async () => {
   const bodies = [];
   const core = { isOn: () => true, log: () => {}, send: async (m, p, { body }) => { bodies.push(body); return { ok: true, status: 200 }; } };

@@ -213,6 +213,8 @@ export interface Platform {
   isEnabled(key: string, options?: { user?: string | number; default?: boolean }): boolean;
   /** Records who did what (Security → Audit log). action: e.g. "user.role_changed". */
   audit(action: string, options?: { actor?: string; target?: string; details?: unknown; req?: IncomingMessage }): void;
+  /** A successful login, for unusual-login alerts. staff: whether the account can change the site. */
+  login(actor: string, options?: { staff?: boolean; req?: IncomingMessage }): void;
   /** A failed login on your site (bot protection): the request, or the address. */
   loginFailed(reqOrIp: IncomingMessage | string): void;
   /** Runs a background job: its errors are sent with the job's name as their route, and each run is timed. */

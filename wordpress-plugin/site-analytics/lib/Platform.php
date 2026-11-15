@@ -556,6 +556,25 @@ class Platform
         $this->modules['audit']->record($action, $actor, $target, $details, PHP_SAPI === 'cli' ? '' : $this->clientIp());
     }
 
+    // A successful login, for unusual-login alerts (Security → Audit log).
+    // $actor: the name you know the account by; $staff: whether it can change
+    // the site (only staff accounts are watched unless the site watches
+    // everyone); $userAgent: the browser's, by default this request's.
+    public function login($actor, $staff = false, $userAgent = null)
+    {
+        if (!is_string($actor) || $actor === '') {
+            return;
+        }
+        if ($userAgent === null && PHP_SAPI !== 'cli' && isset($_SERVER['HTTP_USER_AGENT'])) {
+            $userAgent = (string) $_SERVER['HTTP_USER_AGENT'];
+        }
+        $details = array('staff' => $staff === true);
+        if (is_string($userAgent) && $userAgent !== '') {
+            $details['user_agent'] = substr($userAgent, 0, 500);
+        }
+        $this->audit('user.login', $actor, '', $details);
+    }
+
     // The dashboard's security headers, as array(name, value) pairs.
     public function securityHeaders()
     {

@@ -70,8 +70,11 @@ def _connect_login_failed():
     # Logins and logouts in the audit log.
     from django.contrib.auth.signals import user_logged_in, user_logged_out
 
+    # Through login(), which adds the browser and whether it's a staff
+    # account (is_staff), for unusual-login alerts.
     def on_login(sender, request=None, user=None, **_):
-        get_platform().audit("user.login", actor=getattr(user, "get_username", lambda: "")() if user else "", request=request)
+        get_platform().login(getattr(user, "get_username", lambda: "")() if user else "",
+                             staff=getattr(user, "is_staff", False) is True, request=request)
 
     def on_logout(sender, request=None, user=None, **_):
         get_platform().audit("user.logout", actor=getattr(user, "get_username", lambda: "")() if user else "", request=request)
