@@ -17,8 +17,8 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-const SITE_ANALYTICS_TRACKER_VERSION = '1.0.92';
-const SITE_ANALYTICS_TRACKER_INTEGRITY = 'sha384-dAQxQnQ0Tcck1PphM0LSMLTo6LC+W0QEKB+cF+DvCLx1j8utRZiF8IrRPrCtCBnN';
+const SITE_ANALYTICS_TRACKER_VERSION = '1.0.93';
+const SITE_ANALYTICS_TRACKER_INTEGRITY = 'sha384-DmhtASZEQmatTs6tZjQQDy8FKhrW2dQW7RCfXInWRZucZyhoIN9aD7ZiXxY/ULCa';
 const SITE_ANALYTICS_RELEASE_KEYS = array();
 
 // The release a tracker-release.json body names for $major, as
