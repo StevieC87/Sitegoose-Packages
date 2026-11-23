@@ -114,6 +114,59 @@ posture either, and the answer says `enabled: false`.
   secret-named keys). The backend
   then asks the site for each one over HTTP and only reports the ones that
   really answer, so a file behind a deny rule stays quiet.
+- `os_packages`: the server agent only. What the distribution installed,
+  for the backend to match against the distribution's security notices on
+  OSV.dev (`backend/.../security/osPackages.js`):
+
+  ```json
+  "os_packages": {
+    "ecosystem": "Ubuntu:24.04:LTS",
+    "packages": [
+      { "name": "nginx", "version": "1.24.0-2ubuntu7" },
+      { "name": "linux-hwe-7.0", "version": "7.0.0-43.43~24.04.1", "kernel": true }
+    ],
+    "truncated": false
+  }
+  ```
+
+  `ecosystem` as OSV names it: `Ubuntu:<VERSION_ID>` with `:LTS` for an LTS
+  release, `Debian:<VERSION_ID>`, `AlmaLinux:<major>`, `Rocky Linux:<major>`,
+  `Alpine:v<major>.<minor>`; any other distribution leaves the field out.
+  `name` is what that distribution files its notices under: the **source**
+  package on Debian and Ubuntu (`openssl`, not `libssl3`), with the source
+  version (`dpkg-query`'s `${source:Package}` and `${source:Version}`); the
+  binary package on AlmaLinux and Rocky, with the epoch only when it isn't 0
+  (`1:1.20.1-14.el9`); the origin on Alpine. Installed packages only
+  (`ii`). Kernel packages: only the running kernel's (`uname -r`), marked
+  `kernel: true`, and the backend leaves them to the updates checks. At most
+  5,000 (`truncated: true` past that). Names and versions only. Left out —
+  never sent empty — when the package manager can't be read, so the
+  dashboard says the area wasn't checked. Each report replaces the last list,
+  and it is kept beside the history chain, not in it.
+
+- `container_packages`: the server agent only. The same for each running
+  Docker container's image, at most 20 images, once per image:
+
+  ```json
+  "container_packages": [
+    { "names": ["proxy", "proxy-2"], "image": "nginx:1.27", "ecosystem": "Debian:12",
+      "packages": [{ "name": "openssl", "version": "3.0.17-1~deb12u2" }] }
+  ]
+  ```
+
+  Read from the container's own files through `/proc/<pid>/root` (its
+  `os-release` and package database: dpkg's status file, Alpine's installed
+  database, or `rpm --root` when the host has rpm); nothing runs inside the
+  container. Kernel packages are dropped (a container runs the host's kernel).
+  Images with no package database (scratch, distroless) and distributions
+  outside the list above are left out. The backend's fix for these is a newer
+  image, they are never emailed, and they count as medium at most in the
+  grade.
+
+  The agent reports again soon after the package database changes
+  (`/var/lib/dpkg/status`, the rpm database, `/lib/apk/db/installed`) or a
+  container is created or removed (`/var/lib/docker/containers`): once that
+  has been quiet five minutes, and at most once an hour.
 
 The answer (`200`): `{ "v": 1, "enabled": true, "every": 86400 }`.
 `enabled: false`: software inventory is off on the dashboard (or not in the
@@ -173,6 +226,7 @@ servers that failed it run different ones.
 | `server.auto_updates` | unattended security updates aren't set up |
 | `server.security_updates` | updates that close a security hole are waiting to be installed (`value`: how many, and how many updates in all). `unknown` on a machine whose package manager the client doesn't know |
 | `server.reboot_required` | an update needs a restart to take effect |
+| `server.stale_libraries` | a running process still has a shared library loaded whose file an update replaced (`(deleted)` in `/proc/<pid>/maps`, under `/lib` or `/usr/lib`); `value`: the processes and libraries, "nginx (libssl.so.3)". `unknown` when `/proc` can't be read |
 | `server.listening_ports` | ports besides the web and SSH ones listen on every address (`value`: which) |
 | `server.docker_socket` | an account other than root can write to the Docker socket (root on the host, in effect); the group bit alone doesn't count, `value` names the accounts |
 | `server.tcp_syncookies` | SYN cookies are off (`net.ipv4.tcp_syncookies` is 0), so a flood of half-open connections fills the queue and real visitors can't connect; `value` is `off`. Left out when the client can't read the setting |
@@ -208,7 +262,7 @@ Each area and what covers it:
 | scheduled jobs | `persistence.cron` | the WordPress plugin |
 | SSH keys that can log in | `persistence.keys` | the agent |
 | scheduled job files | `persistence.files` | the agent |
-| the server itself | `server.ssh_*`, `server.auto_updates`, `server.security_updates`, `server.reboot_required`, `server.listening_ports`, `server.docker_socket`, `server.tcp_syncookies` | the agent only |
+| the server itself | `server.ssh_*`, `server.auto_updates`, `server.security_updates`, `server.reboot_required`, `server.stale_libraries`, `server.listening_ports`, `server.docker_socket`, `server.tcp_syncookies` | the agent only |
 
 The last area counts as checked **only** for those ids: a package that reports
 `server.runs_as_root` has not looked at sshd, the updates or the open ports,

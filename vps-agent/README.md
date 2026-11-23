@@ -490,6 +490,26 @@ permission or a file, and it sends no file's contents. The protocol is
   `.env`, a backup copy, a private key, a `.git` folder. The agent reports the
   path and size; the dashboard then asks your site for each one over HTTP and
   tells you whether it really can be downloaded.
+- **The server's own software**: every package the distribution installed
+  (nginx, OpenSSL, sudo, PHP-FPM…), by name and version only, on Ubuntu,
+  Debian, AlmaLinux, Rocky Linux and Alpine. The dashboard matches them against
+  the distribution's own security notices (Ubuntu's USNs, Debian's DSAs and
+  DLAs, AlmaLinux's ALSAs, Rocky's RLSAs, Alpine's records) and names each
+  package with a serious hole that already has a fix, with the command that
+  installs it. A critical one, or a high one reachable from the internet, is
+  emailed. After `apt`, `dnf` or `apk` installs anything, the report goes again
+  within about ten minutes (at most once an hour), so a patched hole clears the
+  same day. Each running Docker container's image is checked the same way,
+  read from the container's files without running anything in it; its fix
+  is a newer image, and it stays in the feed rather than being emailed. The
+  kernel is left to the "updates waiting" and "restart needed" checks. Not
+  covered: RHEL itself, Fedora, Amazon Linux, Podman containers, images with
+  no package database, and anything installed outside the package manager.
+- **Services still running an old library**: a process that loaded a library
+  before an update replaced it keeps the old copy, holes and all, until it
+  restarts. The agent names those processes (what `needrestart` finds). Packages
+  from a vendor's own repository (nginx.org's, say) are judged against the
+  distribution's notices, which can miss holes in them.
 - `analytics-agent posture` lists what it would report (and reports it).
 - The operating system's name and version go with it, so an unsupported release
   is flagged.

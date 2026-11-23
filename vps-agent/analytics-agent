@@ -157,7 +157,7 @@ import zipfile
 import zlib
 from datetime import datetime, timezone
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 CONFIG_FILE = os.environ.get("ANALYTICS_AGENT_CONFIG", "/etc/analytics-agent.json")
 DEFAULTS = {
     "site_id": "",
@@ -4160,6 +4160,357 @@ def pending_updates():
     return None
 
 
+# ---- The server's own software (sdk/protocols/posture.md, `os_packages`) ----------
+# nginx, OpenSSL, sudo, the kernel: what the distribution installed, by name
+# and version, so the backend can look each one up in the distribution's own
+# advisories (OSV.dev). The count above says "7 security updates"; this says
+# which, and the backend says how bad. Names and versions only.
+
+OS_PACKAGES_MAX = 5000
+OS_PACKAGES_SETTLE = 300
+OS_PACKAGES_GAP = 3600
+# Where each package manager keeps what is installed. A change to one means
+# something was installed or updated, and the set-up report goes again early
+# (Posture.due), so a hole that was just patched doesn't stay on the dashboard
+# for a day.
+PACKAGE_DBS = ("/var/lib/dpkg/status", "/var/lib/rpm/rpmdb.sqlite", "/var/lib/rpm/Packages",
+               "/usr/lib/sysimage/rpm/rpmdb.sqlite", "/lib/apk/db/installed",
+               # A container created or removed: a new image is new packages.
+               "/var/lib/docker/containers")
+# Images whose packages are sent, and processes looked through for libraries
+# an update replaced.
+CONTAINER_IMAGES_MAX = 20
+STALE_PROCESSES_MAX = 5000
+# Kernel packages carry the release of the kernel they belong to in their
+# name ("linux-image-6.8.0-45-generic", "linux-hwe-7.0-tools-7.0.0-43"), and
+# old ones stay installed after an update. Only the running one is exposed.
+KERNEL_PACKAGE = re.compile(r"^linux-.*?-(\d+\.\d+\.\d+-\d+)(?:-|$)")
+# A shared library a package installed (not a program's own temp files).
+STALE_LIBRARY = re.compile(r"^/(?:usr/)?lib(?:64|32|exec)?/\S*\.so(?:\.[0-9.]+)?$")
+# Alpine's kernels, by origin; one is installed at a time.
+ALPINE_KERNEL = re.compile(r"^linux-(?:lts|virt|edge|rpi|stable)$")
+
+
+def os_release_fields(text):
+    fields = {}
+    for line in (text or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            fields[key.strip()] = value.strip().strip('"')
+    return fields
+
+
+def os_ecosystem(text):
+    """The distribution as OSV names its advisories ("Ubuntu:24.04:LTS",
+    "Debian:12", "AlmaLinux:9", "Rocky Linux:9", "Alpine:v3.20"), or None
+    for one OSV doesn't cover by package name. Debian testing has no
+    VERSION_ID and no advisories of its own: None too."""
+    fields = os_release_fields(text)
+    name = fields.get("ID", "").lower()
+    version = fields.get("VERSION_ID", "")
+    if name == "ubuntu" and re.match(r"^\d+\.\d+$", version):
+        return "Ubuntu:%s%s" % (version, ":LTS" if "LTS" in fields.get("VERSION", "") else "")
+    if name == "debian" and re.match(r"^\d+$", version):
+        return "Debian:" + version
+    major = version.split(".")[0]
+    if name == "almalinux" and major.isdigit():
+        return "AlmaLinux:" + major
+    if name == "rocky" and major.isdigit():
+        return "Rocky Linux:" + major
+    found = re.match(r"^(\d+)\.(\d+)", version)
+    if name == "alpine" and found:
+        return "Alpine:v%s.%s" % found.groups()
+    return None
+
+
+def other_kernel(name, kernel):
+    """A kernel package for a kernel that isn't the one running."""
+    found = KERNEL_PACKAGE.match(name)
+    if not found:
+        return False
+    held = found.group(1)
+    return not (kernel == held or kernel.startswith(held + "-"))
+
+
+def parse_dpkg(text, kernel):
+    """`dpkg-query` lines: status, package, source package, source version.
+    The status's second letter is whether it's installed: "ii", and "hi" for
+    one held back with apt-mark (the one most likely to be behind).
+    Debian and Ubuntu file advisories under the source package, so that's the
+    name sent, once per source and version. A kernel source counts only when
+    the running kernel came from it: an old kernel left installed, or the
+    `linux` that only `linux-libc-dev` and `linux-tools-common` come from,
+    would otherwise carry every hole of a kernel nobody runs."""
+    out = {}
+    kernels = {}
+    for line in (text or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4 or parts[0][1:2] != "i":
+            continue
+        _, binary, source, version = (p.strip() for p in parts)
+        if not source or not version:
+            continue
+        key = (source, version)
+        out[key] = {"name": source, "version": version}
+        if source == "linux" or KERNEL_PACKAGE.match(binary):
+            kernels[key] = kernels.get(key, False) or (bool(KERNEL_PACKAGE.match(binary)) and not other_kernel(binary, kernel))
+    # The running kernel's are marked: the backend leaves the kernel to the
+    # updates-waiting and restart checks (one kernel lookup at OSV runs to
+    # tens of megabytes).
+    return [dict(row, kernel=True) if key in kernels else row for key, row in out.items() if kernels.get(key, True)]
+
+
+def parse_rpm(text, kernel):
+    """`rpm -qa` lines: name, epoch, version, release. AlmaLinux and Rocky
+    file advisories under each binary package. The epoch is written only when
+    it isn't 0, as the advisories write it."""
+    out = {}
+    for line in (text or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4 or parts[0] == "gpg-pubkey":
+            continue
+        name, epoch, version, release = (p.strip() for p in parts)
+        if not name or not version:
+            continue
+        is_kernel = name == "kernel" or name.startswith("kernel-")
+        if is_kernel and not kernel.startswith("%s-%s" % (version, release)):
+            continue
+        full = "%s-%s" % (version, release) if release else version
+        if epoch not in ("", "0", "(none)"):
+            full = "%s:%s" % (epoch, full)
+        out[(name, full)] = dict({"name": name, "version": full}, **({"kernel": True} if is_kernel else {}))
+    return list(out.values())
+
+
+def parse_apk(text):
+    """Alpine's installed database: a P: (package), V: (version) and o:
+    (origin, the source package its advisories use) per blank-line record."""
+    out = {}
+    record = {}
+    for line in (text or "").splitlines() + [""]:
+        if not line.strip():
+            name = record.get("o") or record.get("P")
+            if name and record.get("V"):
+                row = {"name": name, "version": record["V"]}
+                if ALPINE_KERNEL.match(name):
+                    row["kernel"] = True
+                out[(name, record["V"])] = row
+            record = {}
+        elif len(line) > 2 and line[1] == ":":
+            record[line[0]] = line[2:].strip()
+    return list(out.values())
+
+
+def os_packages():
+    """{"ecosystem", "packages"[, "truncated"]}, or None when this machine's
+    distribution isn't one OSV covers or its package manager didn't answer.
+    Never a guess: an empty list would read as a clean server."""
+    ecosystem = os_ecosystem(read_text("/etc/os-release", 8192))
+    if not ecosystem:
+        return None
+    try:
+        kernel = os.uname().release
+    except Exception:
+        kernel = ""
+    if ecosystem.startswith(("Ubuntu:", "Debian:")):
+        packages = parse_dpkg(_run(["dpkg-query", "-W", "-f",
+                                    "${db:Status-Abbrev}\t${Package}\t${source:Package}\t${source:Version}\n"]), kernel)
+    elif ecosystem.startswith("Alpine:"):
+        packages = parse_apk(read_text("/lib/apk/db/installed", 16 * 1024 * 1024))
+    else:
+        packages = parse_rpm(_run(["rpm", "-qa", "--qf", "%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\n"]), kernel)
+    if not packages:
+        return None
+    packages.sort(key=lambda p: (p["name"], p["version"]))
+    out = {"ecosystem": ecosystem, "packages": packages[:OS_PACKAGES_MAX]}
+    if len(packages) > OS_PACKAGES_MAX:
+        out["truncated"] = True
+    return out
+
+
+def dpkg_status_lines(text):
+    """dpkg's status file as the `dpkg-query` lines parse_dpkg reads, for a
+    container, where nothing can be run: "Source: name (version)" when the
+    source's version differs from the package's."""
+    lines = []
+    for record in (text or "").split("\n\n"):
+        fields = {}
+        for line in record.splitlines():
+            key, sep, value = line.partition(": ")
+            if sep and not line.startswith(" "):
+                fields[key] = value.strip()
+        if not fields.get("Package") or not fields.get("Version"):
+            continue
+        installed = fields.get("Status", "").endswith(" installed")
+        source, _, rest = fields.get("Source", "").partition(" ")
+        version = rest.strip("()") if rest.startswith("(") else fields["Version"]
+        lines.append("%s\t%s\t%s\t%s" % ("ii" if installed else "un", fields["Package"], source or fields["Package"], version))
+    return "\n".join(lines)
+
+
+def in_root(root, path, links=20):
+    """`path` inside the container whose filesystem is at `root`, symlinks
+    followed as the container sees them, or None. Opened plainly through
+    /proc/<pid>/root, an absolute link would be followed on this server: a
+    container could point its package list at any file here."""
+    parts, done = [p for p in path.split("/") if p], []
+    while parts:
+        part = parts.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            if done:
+                done.pop()
+            continue
+        here = root + "/" + "/".join(done + [part])
+        if os.path.islink(here):
+            links -= 1
+            if links < 0:
+                return None
+            try:
+                target = os.readlink(here)
+            except OSError:
+                return None
+            if target.startswith("/"):
+                done = []
+            parts = [p for p in target.split("/") if p] + parts
+        else:
+            done.append(part)
+    return root + "/" + "/".join(done)
+
+
+def container_text(root, path, limit):
+    """A regular file in the container, or "". A container can make its
+    package list a pipe, which would hang a plain open() for good, or swap
+    it for a link after in_root looked."""
+    real = in_root(root, path)
+    if not real:
+        return ""
+    try:
+        fd = os.open(real, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return ""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        with os.fdopen(fd, "rb") as f:
+            fd = None
+            return f.read(limit).decode("utf-8", "replace")
+    except OSError:
+        return ""
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def container_packages_at(root):
+    """{"ecosystem", "packages"} for a container's files under `root`
+    (/proc/<pid>/root), or None. Only files are read: nothing runs in the
+    container; links are followed inside it (in_root)."""
+    ecosystem = os_ecosystem(container_text(root, "/etc/os-release", 8192) or container_text(root, "/usr/lib/os-release", 8192))
+    if not ecosystem:
+        return None
+    if ecosystem.startswith(("Ubuntu:", "Debian:")):
+        packages = parse_dpkg(dpkg_status_lines(container_text(root, "/var/lib/dpkg/status", 32 * 1024 * 1024)), "")
+    elif ecosystem.startswith("Alpine:"):
+        packages = parse_apk(container_text(root, "/lib/apk/db/installed", 16 * 1024 * 1024))
+    elif shutil.which("rpm"):
+        packages = parse_rpm(_run(["rpm", "--root", root, "-qa", "--qf", "%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\n"]), "")
+    else:
+        return None
+    # A container runs the host's kernel: any kernel package in it is unused.
+    packages = [p for p in packages if not p.get("kernel")]
+    if not packages:
+        return None
+    packages.sort(key=lambda p: (p["name"], p["version"]))
+    out = {"ecosystem": ecosystem, "packages": packages[:OS_PACKAGES_MAX]}
+    if len(packages) > OS_PACKAGES_MAX:
+        out["truncated"] = True
+    return out
+
+
+def container_inspect(text):
+    """`docker inspect` as [{name, image (the tag it was started from), id
+    (the image's), pid}] for running containers."""
+    try:
+        items = json.loads(text or "[]")
+    except ValueError:
+        return []
+    out = []
+    for item in items if isinstance(items, list) else []:
+        state = item.get("State") if isinstance(item, dict) else None
+        pid = state.get("Pid") if isinstance(state, dict) else None
+        if not isinstance(pid, int) or pid <= 0 or not state.get("Running"):
+            continue
+        out.append({"name": str(item.get("Name") or "").lstrip("/")[:80] or "container",
+                    "image": str((item.get("Config") or {}).get("Image") or "")[:200],
+                    "id": str(item.get("Image") or ""), "pid": pid})
+    return out
+
+
+def running_containers_inspected():
+    """`docker inspect` of the running containers, or "" without Docker or
+    when it didn't answer."""
+    if not shutil.which("docker"):
+        return ""
+    code, out = _command(["docker", "ps", "-q", "--no-trunc"])
+    ids = out.split()[:APPS_MAX] if code == 0 else []
+    if not ids:
+        return ""
+    code, out = _command(["docker", "inspect"] + ids)
+    return out if code == 0 else ""
+
+
+def container_os_packages():
+    """Each running container's packages, once per image: [{"names",
+    "image", "ecosystem", "packages"}]. [] without Docker. Images built
+    FROM scratch or distroless have no package database and are left out."""
+    by_image = {}
+    for c in container_inspect(running_containers_inspected()):
+        by_image.setdefault(c["id"] or c["image"], []).append(c)
+    groups = []
+    for found in list(by_image.values())[:CONTAINER_IMAGES_MAX]:
+        software = container_packages_at("/proc/%d/root" % found[0]["pid"])
+        if software:
+            groups.append(dict(software, names=sorted({c["name"] for c in found})[:10], image=found[0]["image"]))
+    return groups
+
+
+def stale_libraries(proc="/proc"):
+    """{process name: [library]} for processes that still have a library
+    loaded whose file an update replaced ("(deleted)" in its maps): patched
+    on disk, still the old copy in memory until it restarts. None when /proc
+    can't be read."""
+    try:
+        pids = [d for d in os.listdir(proc) if d.isdigit()][:STALE_PROCESSES_MAX]
+    except OSError:
+        return None
+    found = {}
+    for pid in pids:
+        maps = read_text("%s/%s/maps" % (proc, pid), 4 * 1024 * 1024)
+        libs = set()
+        for line in maps.splitlines():
+            if line.endswith(" (deleted)"):
+                path = line.split(None, 5)[-1][:-len(" (deleted)")]
+                if STALE_LIBRARY.search(path):
+                    libs.add(os.path.basename(path))
+        if libs:
+            name = read_text("%s/%s/comm" % (proc, pid), 64).strip() or pid
+            found.setdefault(name, set()).update(libs)
+    return {name: sorted(libs) for name, libs in found.items()}
+
+
+def package_db_changed_at():
+    """When the package manager last wrote what's installed, or 0."""
+    latest = 0
+    for path in PACKAGE_DBS:
+        try:
+            latest = max(latest, os.stat(path).st_mtime)
+        except OSError:
+            pass
+    return latest
+
+
 def docker_socket_accounts(path):
     """The accounts other than root that can write to the Docker socket. The
     group bit alone says nothing: Docker always sets it, and a group with
@@ -4206,6 +4557,14 @@ def posture_report(config):
         everything, security = counted
         add("server.security_updates", security > 0,
             "%d security, %d in all" % (security, everything) if security else "")
+    # Updated on disk, old in memory: what `apt upgrade` leaves until each
+    # service restarts.
+    stale = stale_libraries()
+    if stale is None:
+        add("server.stale_libraries", None)
+    else:
+        add("server.stale_libraries", bool(stale), ", ".join(
+            "%s (%s)" % (name, ", ".join(libs[:2])) for name, libs in sorted(stale.items())[:8])[:200])
     # SYN cookies keep a server answering when a flood of half-open
     # connections fills the queue; the kernel limits can't stand in for them.
     syncookies = read_text("/proc/sys/net/ipv4/tcp_syncookies", 64).strip()
@@ -4238,6 +4597,14 @@ def posture_report(config):
         body["exposure"] = exposure[:POSTURE_MAX_EXPOSURE]
     if truncated:
         body["truncated"] = True
+    # Left out, not sent empty, when it can't be read: the dashboard then says
+    # the server's own software wasn't checked.
+    software = os_packages()
+    if software:
+        body["os_packages"] = software
+    containers = container_os_packages()
+    if containers:
+        body["container_packages"] = containers
     return body
 
 
@@ -4258,18 +4625,25 @@ class Posture:
         self.config = config
         self.state_file = os.path.join(config["state_dir"], config.get("posture_state") or "posture.json")
         self.next_at = 0
+        # When the last report went, and when the package database had last
+        # changed by then (due() reports early after an update).
+        self.sent_at = 0
+        self.packages_at = 0
         self.lock = threading.Lock()
         self.thread = None
         try:
             with open(self.state_file) as f:
-                self.next_at = json.load(f).get("next_at", 0)
-        except (OSError, ValueError):
+                state = json.load(f)
+            self.next_at = state.get("next_at", 0)
+            self.sent_at = state.get("sent_at", 0)
+            self.packages_at = state.get("packages_at", 0)
+        except (OSError, ValueError, AttributeError):
             pass
 
     def save(self):
         fd, tmp = tempfile.mkstemp(dir=self.config["state_dir"])
         with os.fdopen(fd, "w") as f:
-            json.dump({"next_at": self.next_at}, f)
+            json.dump({"next_at": self.next_at, "sent_at": self.sent_at, "packages_at": self.packages_at}, f)
         os.chmod(tmp, 0o600)
         os.replace(tmp, self.state_file)
 
@@ -4277,8 +4651,12 @@ class Posture:
         """Reports now (`body`: a report already made, so the CLI doesn't walk
         the web folder twice). Returns the checks that failed."""
         with self.lock:
+            changed = package_db_changed_at()
             body = body or posture_report(self.config)
             status, _, raw = request(self.config, "POST", "/events/posture", body=body)
+            if status == 200:
+                self.sent_at = time.time()
+                self.packages_at = changed
             every = POSTURE_EVERY
             if status == 200:
                 try:
@@ -4295,7 +4673,15 @@ class Posture:
             return [c for c in body["checks"] if c["state"] == "fail"]
 
     def due(self):
-        return time.time() >= self.next_at
+        now = time.time()
+        if now >= self.next_at:
+            return True
+        # Packages were installed or updated since the last report: report
+        # again once the package manager has been quiet a few minutes (an
+        # upgrade writes its database many times), and at most once an hour.
+        changed = package_db_changed_at()
+        return bool(self.packages_at) and changed > self.packages_at \
+            and now - changed >= OS_PACKAGES_SETTLE and now - self.sent_at >= OS_PACKAGES_GAP
 
     def running(self):
         return bool(self.thread and self.thread.is_alive())
@@ -8656,14 +9042,8 @@ def docker_apps(text, images_text=""):
 
 def docker_containers():
     """The running containers, or [] without Docker or when it didn't answer."""
-    if not shutil.which("docker"):
-        return []
-    code, out = _command(["docker", "ps", "-q", "--no-trunc"])
-    ids = out.split()[:APPS_MAX] if code == 0 else []
-    if not ids:
-        return []
-    code, out = _command(["docker", "inspect"] + ids)
-    if code != 0:
+    out = running_containers_inspected()
+    if not out:
         return []
     try:
         images = sorted({i.get("Image") for i in json.loads(out or "[]") if isinstance(i, dict) and isinstance(i.get("Image"), str)})
@@ -11436,6 +11816,10 @@ def main():
                 print("  %-28s %d" % (name, len(rows)))
             for file in body.get("exposure") or []:
                 print("  %-28s %s" % ("in the web folder", "%s (%s)" % (file["path"], file["kind"])))
+            software = body.get("os_packages")
+            print("  %-28s %s" % ("server's own packages", "%d (%s)" % (len(software["packages"]), software["ecosystem"]) if software else "not readable here"))
+            for group in body.get("container_packages") or []:
+                print("  %-28s %d (%s, %s)" % ("container " + ", ".join(group["names"])[:18], len(group["packages"]), group["ecosystem"], group["image"]))
             Posture(site).run(body)
         return
     if command == "resources":

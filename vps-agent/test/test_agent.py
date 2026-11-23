@@ -608,6 +608,172 @@ class PendingUpdates(unittest.TestCase):
         self.assertEqual(agent.parse_dnf_check(""), 0)
 
 
+class OsPackages(unittest.TestCase):
+    """The server's own packages, named as its distribution's security
+    notices name them. A wrong name or version means a hole nobody hears
+    about, or one reported that isn't there."""
+
+    def test_the_distribution_as_osv_spells_it(self):
+        self.assertEqual(agent.os_ecosystem('ID=ubuntu\nVERSION_ID="24.04"\nVERSION="24.04.1 LTS (Noble Numbat)"\n'), "Ubuntu:24.04:LTS")
+        self.assertEqual(agent.os_ecosystem('ID=ubuntu\nVERSION_ID="25.10"\nVERSION="25.10 (Questing Quokka)"\n'), "Ubuntu:25.10")
+        self.assertEqual(agent.os_ecosystem('ID=debian\nVERSION_ID="12"\n'), "Debian:12")
+        self.assertEqual(agent.os_ecosystem('ID="almalinux"\nVERSION_ID="9.4"\n'), "AlmaLinux:9")
+        self.assertEqual(agent.os_ecosystem('ID="rocky"\nVERSION_ID="9.5"\n'), "Rocky Linux:9")
+        self.assertEqual(agent.os_ecosystem('ID=alpine\nVERSION_ID=3.20.3\n'), "Alpine:v3.20")
+        # Debian testing has no notices of its own; RHEL isn't searchable by package.
+        self.assertIsNone(agent.os_ecosystem('ID=debian\nPRETTY_NAME="Debian GNU/Linux trixie/sid"\n'))
+        self.assertIsNone(agent.os_ecosystem('ID="rhel"\nVERSION_ID="9.4"\n'))
+        self.assertIsNone(agent.os_ecosystem(""))
+
+    def test_dpkg_sends_source_packages_and_only_the_running_kernel(self):
+        text = "\n".join([
+            "hi \tnginx\tnginx\t1.24.0-2ubuntu7",
+            "ii \tnginx-common\tnginx\t1.24.0-2ubuntu7",
+            "ii \tlibssl3t64\topenssl\t3.0.13-0ubuntu3.16",
+            "rc \tgone\tgone\t1.0",
+            # The kernel running, and one left installed after an update.
+            "ii \tlinux-image-7.0.0-43-generic\tlinux-signed-hwe-7.0\t7.0.0-43.43~24.04.1",
+            "ii \tlinux-modules-7.0.0-43-generic\tlinux-hwe-7.0\t7.0.0-43.43~24.04.1",
+            "ii \tlinux-image-7.0.0-42-generic\tlinux-signed-hwe-7.0\t7.0.0-42.42~24.04.1",
+            "ii \tlinux-hwe-7.0-tools-7.0.0-42\tlinux-hwe-7.0\t7.0.0-42.42~24.04.1",
+            # The `linux` only the userspace headers come from: no kernel runs it.
+            "ii \tlinux-libc-dev\tlinux\t6.8.0-149.149",
+            "ii \tlinux-tools-common\tlinux\t6.8.0-149.149",
+            "ii \tlinux-firmware\tlinux-firmware\t20240318.git3b128b60-0ubuntu2.26",
+            "not a row",
+        ])
+        rows = agent.parse_dpkg(text, "7.0.0-43-generic")
+        self.assertEqual(sorted((r["name"], r["version"], r.get("kernel", False)) for r in rows), [
+            ("linux-firmware", "20240318.git3b128b60-0ubuntu2.26", False),
+            ("linux-hwe-7.0", "7.0.0-43.43~24.04.1", True),
+            ("linux-signed-hwe-7.0", "7.0.0-43.43~24.04.1", True),
+            ("nginx", "1.24.0-2ubuntu7", False),
+            ("openssl", "3.0.13-0ubuntu3.16", False),
+        ])
+
+    def test_rpm_keeps_the_epoch_the_notices_write_and_the_running_kernel(self):
+        text = "\n".join([
+            "nginx\t1\t1.20.1\t14.el9",
+            "openssl-libs\t0\t3.0.7\t27.el9",
+            "kernel-core\t0\t5.14.0\t427.13.1.el9_4",
+            "kernel-core\t0\t5.14.0\t362.8.1.el9_3",
+            "gpg-pubkey\t0\tabcd\t1234",
+        ])
+        rows = agent.parse_rpm(text, "5.14.0-427.13.1.el9_4.x86_64")
+        self.assertEqual(sorted((r["name"], r["version"], r.get("kernel", False)) for r in rows), [
+            ("kernel-core", "5.14.0-427.13.1.el9_4", True),
+            ("nginx", "1:1.20.1-14.el9", False),
+            ("openssl-libs", "3.0.7-27.el9", False),
+        ])
+
+    def test_alpine_names_the_origin_package(self):
+        text = "P:libcrypto3\nV:3.3.2-r0\no:openssl\n\nP:nginx\nV:1.26.2-r0\no:nginx\n\nP:linux-virt\nV:6.6.58-r0\no:linux-virt\n"
+        rows = agent.parse_apk(text)
+        self.assertEqual(sorted((r["name"], r["version"], r.get("kernel", False)) for r in rows), [
+            ("linux-virt", "6.6.58-r0", True), ("nginx", "1.26.2-r0", False), ("openssl", "3.3.2-r0", False),
+        ])
+
+    def test_unreadable_is_left_out_never_sent_empty(self):
+        with mock.patch.object(agent, "read_text", lambda path, limit=0: 'ID=ubuntu\nVERSION_ID="24.04"\nVERSION="24.04 LTS"\n'), \
+                mock.patch.object(agent, "_run", lambda args, ok=(0,): None):
+            self.assertIsNone(agent.os_packages())
+
+    def test_an_update_brings_the_report_forward_once_apt_has_finished(self):
+        state = tempfile.mkdtemp()
+        checks = agent.Posture({"state_dir": state, "site_id": "s"})
+        now = 1_800_000_000
+        checks.next_at = now + 20 * 3600
+        checks.sent_at = now - 2 * 3600
+        checks.packages_at = now - 3 * 3600
+        with mock.patch.object(agent.time, "time", lambda: now):
+            # Nothing installed since the last report.
+            with mock.patch.object(agent, "package_db_changed_at", lambda: now - 3 * 3600):
+                self.assertFalse(checks.due())
+            # apt is still writing.
+            with mock.patch.object(agent, "package_db_changed_at", lambda: now - 60):
+                self.assertFalse(checks.due())
+            # Finished a few minutes ago.
+            with mock.patch.object(agent, "package_db_changed_at", lambda: now - 600):
+                self.assertTrue(checks.due())
+            # But not twice within the hour.
+            checks.sent_at = now - 600
+            with mock.patch.object(agent, "package_db_changed_at", lambda: now - 400):
+                self.assertFalse(checks.due())
+
+
+class ContainersAndRestarts(unittest.TestCase):
+    """Packages inside containers, read from their files, and services still
+    running a library an update replaced."""
+
+    def test_dpkg_status_file_reads_as_dpkg_query_would(self):
+        text = (
+            "Package: libssl3\nStatus: install ok installed\nSource: openssl\nVersion: 3.0.2-0ubuntu1.30\n\n"
+            "Package: libc6\nStatus: install ok installed\nSource: glibc (2.35-0ubuntu3.15)\nVersion: 2.35-0ubuntu3.15+b1\n\n"
+            "Package: gone\nStatus: deinstall ok config-files\nVersion: 1.0\n\n"
+            "Package: zlib1g\nStatus: hold ok installed\nVersion: 1:1.2.11\nDescription: x\n more: y\n"
+        )
+        rows = agent.parse_dpkg(agent.dpkg_status_lines(text), "")
+        self.assertEqual(sorted((r["name"], r["version"]) for r in rows), [
+            ("glibc", "2.35-0ubuntu3.15"), ("openssl", "3.0.2-0ubuntu1.30"), ("zlib1g", "1:1.2.11"),
+        ])
+
+    def test_a_containers_files_give_its_distribution_and_packages(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "etc"))
+        os.makedirs(os.path.join(root, "var/lib/dpkg"))
+        with open(os.path.join(root, "etc/os-release"), "w") as f:
+            f.write('ID=debian\nVERSION_ID="12"\n')
+        with open(os.path.join(root, "var/lib/dpkg/status"), "w") as f:
+            f.write("Package: redis-server\nStatus: install ok installed\nSource: redis\nVersion: 5:7.0.15-1\n")
+        self.assertEqual(agent.container_packages_at(root), {"ecosystem": "Debian:12", "packages": [{"name": "redis", "version": "5:7.0.15-1"}]})
+        # Distroless: no os-release, nothing to send.
+        self.assertIsNone(agent.container_packages_at(tempfile.mkdtemp()))
+
+    def test_a_containers_links_stay_inside_it(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "usr/lib"))
+        os.makedirs(os.path.join(root, "etc"))
+        with open(os.path.join(root, "usr/lib/os-release"), "w") as f:
+            f.write("ID=alpine\nVERSION_ID=3.20.3\n")
+        os.symlink("../usr/lib/os-release", os.path.join(root, "etc/os-release"))
+        os.symlink("/usr/lib", os.path.join(root, "lib"))
+        self.assertEqual(agent.in_root(root, "/etc/os-release"), root + "/usr/lib/os-release")
+        # Absolute: the container's /usr/lib, not this machine's.
+        self.assertEqual(agent.in_root(root, "/lib/apk"), root + "/usr/lib/apk")
+        os.symlink("/etc/shadow", os.path.join(root, "etc/escape"))
+        self.assertEqual(agent.in_root(root, "/etc/escape"), root + "/etc/shadow")
+        os.symlink("loop", os.path.join(root, "etc/loop"))
+        self.assertIsNone(agent.in_root(root, "/etc/loop"))
+        self.assertEqual(agent.container_text(root, "/etc/os-release", 100), "ID=alpine\nVERSION_ID=3.20.3\n")
+        # A pipe would block open() for good: not a file, so nothing.
+        os.mkfifo(os.path.join(root, "etc/pipe"))
+        self.assertEqual(agent.container_text(root, "/etc/pipe", 100), "")
+
+    def test_only_running_containers_with_a_process_are_read(self):
+        text = json.dumps([
+            {"Name": "/web", "Image": "sha256:aa", "Config": {"Image": "nginx:1.27"}, "State": {"Running": True, "Pid": 4321}},
+            {"Name": "/old", "Image": "sha256:bb", "Config": {"Image": "redis:7"}, "State": {"Running": False, "Pid": 0}},
+        ])
+        self.assertEqual(agent.container_inspect(text), [{"name": "web", "image": "nginx:1.27", "id": "sha256:aa", "pid": 4321}])
+        self.assertEqual(agent.container_inspect("not json"), [])
+
+    def test_a_replaced_library_still_loaded_names_its_process(self):
+        proc = tempfile.mkdtemp()
+        def process(pid, comm, maps):
+            os.makedirs(os.path.join(proc, pid))
+            with open(os.path.join(proc, pid, "comm"), "w") as f:
+                f.write(comm + "\n")
+            with open(os.path.join(proc, pid, "maps"), "w") as f:
+                f.write(maps)
+        process("10", "nginx", "7f00-7f01 r-xp 00000000 08:01 123 /usr/lib/x86_64-linux-gnu/libssl.so.3 (deleted)\n"
+                               "7f02-7f03 r-xp 00000000 08:01 124 /usr/lib/x86_64-linux-gnu/libc.so.6\n")
+        # A program's own deleted temp file is not an update.
+        process("11", "node", "7f00-7f01 rw-s 00000000 00:01 9 /dev/shm/x (deleted)\n7f00-7f01 r-xp 0 0:0 1 /tmp/a.so (deleted)\n")
+        process("12", "sshd", "")
+        self.assertEqual(agent.stale_libraries(proc), {"nginx": ["libssl.so.3"]})
+        self.assertIsNone(agent.stale_libraries(os.path.join(proc, "missing")))
+
+
 class ReviewFixes(unittest.TestCase):
     """What the 2026-10-26 review found: each case is a way the agent was wrong."""
 
@@ -1158,7 +1324,7 @@ class AppsReporting(unittest.TestCase):
         path, body = self.sent[0]
         self.assertEqual(path, "/events/apps")
         self.assertEqual((body["v"], body["client"]), (1, "vps-agent/" + agent.VERSION))
-        self.assertEqual(agent.VERSION, "0.9.0")
+        self.assertEqual(agent.VERSION, "0.10.0")
         for minutes in (1, 5, 10, 30):
             job.tick(t + minutes * 60)
         self.assertEqual(len(self.sent), 1, "nothing changed")
