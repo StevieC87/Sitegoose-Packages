@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Site Analytics
  * Description: Your analytics in WordPress: the tracker served from your own domain so ad blockers don't hide visitors, WooCommerce orders sent from your server, a firewall, error monitoring, server speed, file monitoring and a check of your plugins for known security holes. Settings → Site Analytics.
- * Version: 2.5.4
+ * Version: 2.5.5
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * License: MIT
@@ -240,8 +240,10 @@ function site_analytics_serves_files($path, array $dirs, $favicon)
     }
     return false;
 }
-// Cron runs automatic updates: what it records (the audit log) is sent when it ends.
-if (wp_doing_cron()) {
+// Cron runs automatic updates, and WP-CLI updates, orders and Action Scheduler
+// queues: what they record (purchases, the audit log) is sent when they end.
+// protect() leaves the command line alone, so nothing else would send it.
+if (wp_doing_cron() || (defined('WP_CLI') && WP_CLI)) {
     register_shutdown_function(function () {
         site_analytics_platform()->afterResponse();
     });
@@ -331,7 +333,8 @@ const SITE_ANALYTICS_PROXY_OPTION = 'site_analytics_proxy';
 // holds the proxy key. 4: and the site id, so px.php can apply the firewall's
 // address rules (deny, bans) before it forwards anything. 5: and whether the
 // collector may be on a private address (site_analytics_endpoint_any()).
-const SITE_ANALYTICS_PROXY_FORMAT = 5;
+// 6: the .htaccess rule quotes px.php's path and escapes what it passes on.
+const SITE_ANALYTICS_PROXY_FORMAT = 6;
 const SITE_ANALYTICS_PROXY_REPAIR_HOOK = 'site_analytics_proxy_repair';
 
 // The path on the site, from the secret: not guessable from the page, and the
@@ -479,9 +482,16 @@ function site_analytics_proxy_htaccess($prefix)
         return false;
     }
     $target = wp_parse_url(plugins_url('px.php', __FILE__), PHP_URL_PATH);
-    // sa_k tells px.php which site's config to read.
+    // Quoted, so a folder with a space can't break the line (Apache would
+    // answer 500 for the whole site); a quote or backslash can't be, so that
+    // site uses px.php's own address (no rule). B escapes $2: an "&" in the
+    // request's path can't add parameters of its own. sa_k tells px.php which
+    // site's config to read.
+    if (!is_string($target) || $target === '' || preg_match('/["\\\\\x00-\x1f]/', $target)) {
+        $prefix = '';
+    }
     $block = "# BEGIN Site Analytics\n<IfModule mod_rewrite.c>\nRewriteEngine On\n"
-        . "RewriteRule ^" . $prefix . "/(js|api)/(.*)$ " . $target . "?sa_k=" . $prefix . "&sa_t=$1&sa_p=$2 [QSA,L]\n"
+        . "RewriteRule ^" . $prefix . "/(js|api)/(.*)$ \"" . $target . "?sa_k=" . $prefix . "&sa_t=$1&sa_p=$2\" [B,QSA,L]\n"
         . "</IfModule>\n# END Site Analytics\n";
     $without = site_analytics_proxy_htaccess_strip($current);
     if ($prefix === '') {
@@ -564,6 +574,9 @@ register_activation_hook(__FILE__, function () {
 // the settings page and press Save. (Front-end page views do the same from
 // cron; this covers sites whose WP-Cron never runs.)
 add_action('admin_init', function () {
+    if (wp_doing_ajax()) {
+        return;
+    }
     $state = get_option(SITE_ANALYTICS_PROXY_OPTION, null);
     if (is_array($state)) {
         $state = site_analytics_proxy_state();
@@ -575,7 +588,16 @@ add_action('admin_init', function () {
         return;
     }
     set_transient('site_analytics_proxy_tried', 1, DAY_IN_SECONDS);
-    site_analytics_proxy_refresh(site_analytics_platform_settings());
+    // Its checks ask the site itself, up to 10 s each where the host blocks
+    // that: after the page has gone to the browser, not before.
+    add_action('shutdown', function () {
+        if (function_exists('fastcgi_finish_request')) {
+            @fastcgi_finish_request();
+        } elseif (function_exists('litespeed_finish_request')) {
+            @litespeed_finish_request();
+        }
+        site_analytics_proxy_refresh(site_analytics_platform_settings());
+    }, 0);
 });
 
 // The rewrite must not outlive the plugin: it points at a file that is gone.
@@ -591,15 +613,21 @@ register_deactivation_hook(__FILE__, function () {
 const SITE_ANALYTICS_RELEASE_OPTION = 'site_analytics_tracker_release';
 const SITE_ANALYTICS_RELEASE_HOOK = 'site_analytics_tracker_release_check';
 
-// The tracker version the tag names, with its integrity hash: the last signed
-// release taken, else the one this build of the plugin carries.
+// The tracker version the tag names, with its integrity hash: the newer of the
+// last signed release taken and the one this build of the plugin carries (an
+// update can ship a fix before the next signed file). The seq stays the signed
+// one's, so an old file served again is still refused.
 function site_analytics_tracker_release()
 {
+    $built = array('version' => SITE_ANALYTICS_TRACKER_VERSION, 'integrity' => SITE_ANALYTICS_TRACKER_INTEGRITY, 'seq' => 0);
     $taken = get_option(SITE_ANALYTICS_RELEASE_OPTION);
-    if (is_array($taken) && isset($taken['version'], $taken['integrity'], $taken['seq'])) {
+    if (!is_array($taken) || !isset($taken['version'], $taken['integrity'], $taken['seq'])) {
+        return $built;
+    }
+    if (version_compare((string) $taken['version'], SITE_ANALYTICS_TRACKER_VERSION, '>=')) {
         return $taken;
     }
-    return array('version' => SITE_ANALYTICS_TRACKER_VERSION, 'integrity' => SITE_ANALYTICS_TRACKER_INTEGRITY, 'seq' => 0);
+    return array('seq' => $taken['seq']) + $built;
 }
 
 // Reads the collector's signed release file and takes the version it names,
@@ -869,8 +897,14 @@ add_action('template_redirect', function () {
 }, 0);
 
 add_filter('rest_dispatch_request', function ($result, $request, $route) {
-    // "/wp/v2/posts/(?P<id>[\d]+)" -> "/wp-json/wp/v2/posts/{id}"
-    site_analytics_platform()->setRoute('/wp-json' . preg_replace('#\(\?P<(\w+)>[^)]*\)#', '{$1}', (string) $route));
+    // "/wp/v2/posts/(?P<id>[\d]+)" -> "/wp-json/wp/v2/posts/{id}". The group
+    // may hold groups of its own and classes with a ")" in them: matched to
+    // its own closing ")", escapes and [...] taken whole.
+    site_analytics_platform()->setRoute('/wp-json' . preg_replace(
+        '#\(\?P<(\w+)>((?:\\\\.|\[(?:\\\\.|[^\]\\\\])*\]|[^()\[\]\\\\]|\((?2)\))*)\)#',
+        '{$1}',
+        (string) $route
+    ));
     return $result;
 }, 10, 3);
 
@@ -960,12 +994,30 @@ if (!isset(\$wpdb) && class_exists('wpdb', false) && is_file({$queries})) {
 PHP;
 }
 
-// Created, never overwritten: 'x' fails when the file appeared meanwhile.
+// Created when there's none ('x' fails when the file appeared meanwhile), and
+// replaced only when it's ours and its code changed: written beside it and
+// renamed over it, so no request ever loads half a file. Another plugin's
+// db.php is never touched.
 function site_analytics_db_dropin_install()
 {
     $path = site_analytics_db_dropin_path();
-    if ((defined('SITE_ANALYTICS_QUERIES') && !SITE_ANALYTICS_QUERIES) || file_exists($path) || !is_writable(WP_CONTENT_DIR)) {
+    if ((defined('SITE_ANALYTICS_QUERIES') && !SITE_ANALYTICS_QUERIES) || !is_writable(WP_CONTENT_DIR)) {
         return false;
+    }
+    if (file_exists($path)) {
+        $code = site_analytics_db_dropin_code();
+        if (!site_analytics_db_dropin_ours($path)) {
+            return false;
+        }
+        if ((string) @file_get_contents($path) === $code) {
+            return true;
+        }
+        $temp = $path . '.' . wp_generate_password(8, false) . '.tmp';
+        $ok = @file_put_contents($temp, $code) === strlen($code) && @rename($temp, $path);
+        if (!$ok) {
+            @unlink($temp);
+        }
+        return $ok;
     }
     $file = @fopen($path, 'x');
     if (!$file) {
@@ -991,16 +1043,18 @@ function site_analytics_db_dropin_remove()
 register_activation_hook(__FILE__, 'site_analytics_db_dropin_install');
 register_deactivation_hook(__FILE__, 'site_analytics_db_dropin_remove');
 
-// An update isn't an activation, so a site that updated to a version with the
-// drop-in gets it on the next admin page instead, tried once per version
-// (wp-content may stay unwritable). Turning query timing off with
-// SITE_ANALYTICS_QUERIES takes ours away the same way.
+// An update isn't an activation, so a site that updated to a version whose
+// drop-in is new or changed gets it on the next admin page instead, tried
+// once per version of its code (wp-content may stay unwritable): the code is
+// built in memory, so nothing is read from disk on an ordinary admin request.
+// Turning query timing off with SITE_ANALYTICS_QUERIES takes ours away the
+// same way.
 add_action('admin_init', function () {
     if (defined('SITE_ANALYTICS_QUERIES') && !SITE_ANALYTICS_QUERIES) {
         site_analytics_db_dropin_remove();
         return;
     }
-    $version = get_file_data(__FILE__, array('Version' => 'Version'))['Version'];
+    $version = md5(site_analytics_db_dropin_code());
     if (get_option('site_analytics_db_dropin_tried') === $version) {
         return;
     }
@@ -1048,7 +1102,8 @@ function site_analytics_platform_is_spam(array $fields, $email = null, $name = n
 }
 
 add_filter('pre_comment_approved', function ($approved, $comment) {
-    if ($approved === 'spam' || $approved === 'trash') {
+    // Already refused (another filter's WP_Error) or already spam: left as it is.
+    if (is_wp_error($approved) || $approved === 'spam' || $approved === 'trash') {
         return $approved;
     }
     $type = isset($comment['comment_type']) ? (string) $comment['comment_type'] : '';
@@ -1594,7 +1649,7 @@ function site_analytics_posture_checks()
     $add('wp.auto_update_core', site_analytics_posture_on('AUTOMATIC_UPDATER_DISABLED')
         || (defined('WP_AUTO_UPDATE_CORE') && constant('WP_AUTO_UPDATE_CORE') === false));
     $add('wp.force_ssl_admin', strpos((string) get_option('siteurl'), 'https://') === 0 && !force_ssl_admin());
-    $add('wp.db_prefix', isset($GLOBALS['wpdb']) && $GLOBALS['wpdb']->prefix === 'wp_');
+    $add('wp.db_prefix', isset($GLOBALS['wpdb']) && $GLOBALS['wpdb']->base_prefix === 'wp_');
 
     // Anyone can register *and* gets more than Subscriber.
     $role = (string) get_option('default_role');
