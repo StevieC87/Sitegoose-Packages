@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Site Analytics
  * Description: Your analytics in WordPress: the tracker served from your own domain so ad blockers don't hide visitors, WooCommerce orders sent from your server, a firewall, error monitoring, server speed, file monitoring and a check of your plugins for known security holes. Settings → Site Analytics.
- * Version: 2.5.3
+ * Version: 2.5.4
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * License: MIT
@@ -1190,9 +1190,11 @@ add_action('wp_login', function ($login, $user) {
 // once an hour WP-Cron compares the site's files with the version accepted on
 // the dashboard and reports what's different (Security → Page integrity).
 // WordPress changes its own files too, so: core files matching WordPress.org's
-// checksums are taken in, and plugin, theme and translation *updates* are
-// trusted for two hours (installs are reported: someone with admin rights
-// could install anything). Anything that looks hacked is reported regardless.
+// checksums are taken in, and what a plugin, theme, translation or core
+// *update* changed is trusted until the next scan has taken it in (installs
+// are reported: someone with admin rights could install anything). Anything
+// that looks hacked, or a core file that isn't WordPress's own, is reported
+// regardless.
 const SITE_ANALYTICS_FILES_STATE = 'site_analytics_files_state';
 const SITE_ANALYTICS_FILES_TRUSTED = 'site_analytics_files_trusted';
 const SITE_ANALYTICS_FILES_HOOK = 'site_analytics_files_check';
@@ -1212,6 +1214,8 @@ function site_analytics_files_options()
         // and substituting the bytes would name a file that isn't there.
         // 'gz:' and 'js:' are the JSON of versions before 2.4.3.
         'load' => function () {
+            // Updates finished from now on are still to be scanned (see 'save').
+            $GLOBALS['site_analytics_files_scan_at'] = time();
             $raw = get_option(SITE_ANALYTICS_FILES_STATE, '');
             if (!is_string($raw) || $raw === '') {
                 return null;
@@ -1234,18 +1238,22 @@ function site_analytics_files_options()
             $body = serialize($state);
             $raw = function_exists('gzcompress') ? 'gs:' . base64_encode(gzcompress($body, 6)) : 'ps:' . base64_encode($body);
             update_option(SITE_ANALYTICS_FILES_STATE, $raw, false);
+            // Saved only at the end of a scan: the updates finished before it
+            // began are in the accepted version now, so their trust is spent.
+            if (isset($GLOBALS['site_analytics_files_scan_at'])) {
+                site_analytics_files_trust_spent((int) $GLOBALS['site_analytics_files_scan_at']);
+            }
         },
         'official' => 'site_analytics_files_official',
         'trusted' => 'site_analytics_files_trusted',
     );
 }
 
-// Core files against WordPress.org's checksums for this version: true when
-// the file is the official one, false when it differs (or is an unknown PHP
-// file in wp-admin or wp-includes, where attackers hide them), null otherwise.
-function site_analytics_files_official($path)
+// WordPress.org's checksums for the installed version (relative path => md5),
+// empty when they couldn't be fetched. A new version fetches its own.
+function site_analytics_files_core_sums()
 {
-    static $sums = null, $root = null;
+    static $sums = null;
     if ($sums === null) {
         global $wp_version;
         $locale = get_locale() ?: 'en_US';
@@ -1262,20 +1270,66 @@ function site_analytics_files_official($path)
             $sums = is_array($sums) ? $sums : array();
             set_site_transient($key, $sums, $sums ? DAY_IN_SECONDS : HOUR_IN_SECONDS);
         }
-        $root = wp_normalize_path(ABSPATH);
     }
+    return $sums;
+}
+
+// The path below ABSPATH when it's a core path (not wp-content), else null.
+function site_analytics_files_core_relative($path)
+{
+    $root = wp_normalize_path(ABSPATH);
     $path = wp_normalize_path($path);
-    if (!$sums || strpos($path, $root) !== 0) {
+    if (strpos($path, $root) !== 0) {
         return null;
     }
     $relative = substr($path, strlen($root));
-    if (isset($sums[$relative]) && strpos($relative, 'wp-content/') !== 0) {
+    return strpos($relative, 'wp-content/') === 0 ? null : $relative;
+}
+
+// Core files against WordPress.org's checksums for this version: true when
+// the file is the official one, false when it differs (or is an unknown PHP
+// file in wp-admin or wp-includes, where attackers hide them), null otherwise.
+function site_analytics_files_official($path)
+{
+    $sums = site_analytics_files_core_sums();
+    $relative = site_analytics_files_core_relative($path);
+    if (!$sums || $relative === null) {
+        return null;
+    }
+    if (isset($sums[$relative])) {
         return md5_file($path) === $sums[$relative];
     }
     if (preg_match('#^wp-(admin|includes)/#', $relative) && preg_match('/\.(php[0-9]?|phtml|phar)$/Di', $relative)) {
         return false;
     }
     return null;
+}
+
+// Whether an entry of SITE_ANALYTICS_FILES_TRUSTED still holds: until the scan
+// after the update (pruned by site_analytics_files_trust_spent()), and never
+// past a week, should WP-Cron not run at all. Versions before 2.5.4 kept an
+// expiry time instead of an array.
+function site_analytics_files_trust_holds($entry)
+{
+    if (is_array($entry)) {
+        return isset($entry['at']) && (int) $entry['at'] >= time() - WEEK_IN_SECONDS;
+    }
+    return (int) $entry >= time();
+}
+
+// Drops the trust of updates finished before $since, when a scan began.
+function site_analytics_files_trust_spent($since)
+{
+    $trusted = get_option(SITE_ANALYTICS_FILES_TRUSTED, array());
+    if (!is_array($trusted) || !$trusted) {
+        return;
+    }
+    $left = array_filter($trusted, function ($entry) use ($since) {
+        return site_analytics_files_trust_holds($entry) && (!is_array($entry) || (int) $entry['at'] >= $since);
+    });
+    if (count($left) !== count($trusted)) {
+        update_option(SITE_ANALYTICS_FILES_TRUSTED, $left, false);
+    }
 }
 
 function site_analytics_files_trusted($path)
@@ -1286,15 +1340,29 @@ function site_analytics_files_trusted($path)
         $trusted = is_array($trusted) ? $trusted : array();
     }
     $path = wp_normalize_path($path);
-    foreach ($trusted as $prefix => $until) {
-        if ((int) $until >= time() && strpos($path, (string) $prefix) === 0) {
-            return true;
+    $match = false;
+    foreach ($trusted as $prefix => $entry) {
+        if (site_analytics_files_trust_holds($entry) && strpos($path, (string) $prefix) === 0) {
+            $match = true;
+            break;
         }
     }
-    return false;
+    if (!$match) {
+        return false;
+    }
+    // No update makes a core file differ from WordPress's own. A core file
+    // gone is one the update removed only when this version doesn't have it.
+    if (site_analytics_files_core_relative($path) === null) {
+        return true;
+    }
+    if (file_exists($path)) {
+        return site_analytics_files_official($path) !== false;
+    }
+    $sums = site_analytics_files_core_sums();
+    return $sums && !isset($sums[site_analytics_files_core_relative($path)]);
 }
 
-// What an update changed is trusted for two hours; the check runs a minute later.
+// What an update changed is trusted until the next scan, which runs a minute later.
 add_action('upgrader_process_complete', function ($upgrader, $options) {
     if (!isset($options['action']) || $options['action'] !== 'update') {
         return;
@@ -1312,16 +1380,27 @@ add_action('upgrader_process_complete', function ($upgrader, $options) {
         }
     } elseif ($type === 'translation') {
         $prefixes[] = wp_normalize_path(WP_LANG_DIR . '/');
+    } elseif ($type === 'core') {
+        // Core files it removed, and the default themes and plugins it copied
+        // in (only the ones new since the old version, so just made).
+        $prefixes[] = wp_normalize_path(ABSPATH . 'wp-admin/');
+        $prefixes[] = wp_normalize_path(ABSPATH . WPINC . '/');
+        $prefixes[] = wp_normalize_path(WP_LANG_DIR . '/');
+        global $_new_bundled_files;
+        foreach (is_array($_new_bundled_files) ? array_keys($_new_bundled_files) : array() as $dir) {
+            $full = WP_CONTENT_DIR . '/' . $dir;
+            if (is_dir($full) && @filemtime($full) >= time() - HOUR_IN_SECONDS) {
+                $prefixes[] = trailingslashit(wp_normalize_path($full));
+            }
+        }
     }
-    if (!$prefixes && $type !== 'core') {
+    if (!$prefixes) {
         return;
     }
     $trusted = get_option(SITE_ANALYTICS_FILES_TRUSTED, array());
-    $trusted = array_filter(is_array($trusted) ? $trusted : array(), function ($until) {
-        return (int) $until >= time();
-    });
+    $trusted = array_filter(is_array($trusted) ? $trusted : array(), 'site_analytics_files_trust_holds');
     foreach ($prefixes as $prefix) {
-        $trusted[$prefix] = time() + 2 * HOUR_IN_SECONDS;
+        $trusted[$prefix] = array('at' => time());
     }
     update_option(SITE_ANALYTICS_FILES_TRUSTED, $trusted, false);
     wp_schedule_single_event(time() + 60, SITE_ANALYTICS_FILES_HOOK, array(true));
